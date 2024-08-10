@@ -3,7 +3,7 @@ use crate::Encode;
 use crate::Error;
 
 pub struct EncryptedBytes<const N: usize> {
-    pub data: [u8; N],
+    data: [u8; N],
 }
 
 impl<const N: usize> Decode for EncryptedBytes<N> {
