@@ -8,7 +8,6 @@ use constant_time_eq::constant_time_eq;
 use rand_core::OsRng;
 use rand_core::RngCore;
 use tai64::Tai64N;
-use x25519_dalek::EphemeralSecret;
 use x25519_dalek::PublicKey;
 use x25519_dalek::StaticSecret;
 
@@ -163,6 +162,12 @@ impl Encode for EncryptedHandshakeInitiation {
     }
 }
 
+pub struct HandshakeResponse {
+    pub sender_index: u32,
+    pub receiver_index: u32,
+    pub unencrypted_ephemeral: PublicKey,
+}
+
 pub struct EncryptedHandshakeResponse {
     pub sender_index: u32,
     pub receiver_index: u32,
@@ -207,7 +212,7 @@ impl Decode for EncryptedStatic {
             .get(..ENCRYPTED_STATIC_LEN)
             .ok_or(Error::Proto)?
             .try_into()
-            .map_err(Error::proto)?;
+            .map_err(Error::map)?;
         let encrypted_static = EncryptedStatic { data };
         Ok((encrypted_static, &slice[ENCRYPTED_STATIC_LEN..]))
     }
@@ -229,7 +234,7 @@ impl TryFrom<Vec<u8>> for EncryptedStatic {
     type Error = Error;
     fn try_from(other: Vec<u8>) -> Result<Self, Self::Error> {
         Ok(Self {
-            data: other.try_into().map_err(Error::proto)?,
+            data: other.try_into().map_err(Error::map)?,
         })
     }
 }
@@ -244,7 +249,7 @@ impl Decode for EncryptedTimestamp {
             .get(..ENCRYPTED_TAI_LEN)
             .ok_or(Error::Proto)?
             .try_into()
-            .map_err(Error::proto)?;
+            .map_err(Error::map)?;
         let encrypted_timestamp = EncryptedTimestamp { data };
         Ok((encrypted_timestamp, &slice[ENCRYPTED_TAI_LEN..]))
     }
@@ -266,7 +271,7 @@ impl TryFrom<Vec<u8>> for EncryptedTimestamp {
     type Error = Error;
     fn try_from(other: Vec<u8>) -> Result<Self, Self::Error> {
         Ok(Self {
-            data: other.try_into().map_err(Error::proto)?,
+            data: other.try_into().map_err(Error::map)?,
         })
     }
 }
@@ -281,7 +286,7 @@ impl Decode for EncryptedNothing {
             .get(..ENCRYPTED_NOTHING_LEN)
             .ok_or(Error::Proto)?
             .try_into()
-            .map_err(Error::proto)?;
+            .map_err(Error::map)?;
         let encrypted_timestamp = EncryptedNothing { data };
         Ok((encrypted_timestamp, &slice[ENCRYPTED_NOTHING_LEN..]))
     }
@@ -331,7 +336,7 @@ impl Decode for Mac {
             .get(..MAC_LEN)
             .ok_or(Error::Proto)?
             .try_into()
-            .map_err(Error::proto)?;
+            .map_err(Error::map)?;
         Ok((Mac { data }, &slice[MAC_LEN..]))
     }
 }
@@ -356,8 +361,11 @@ pub struct Initiator {
     sender_index: u32,
     chaining_key: [u8; CHAINING_KEY_LEN],
     hash: [u8; HASH_LEN],
+    ephemeral_private: StaticSecret,
+    ephemeral_public: PublicKey,
     static_private: StaticSecret,
     static_public: PublicKey,
+    static_preshared: StaticSecret,
     responder_static_public: PublicKey,
     last_received_cookie: Option<Cookie>,
 }
@@ -366,14 +374,20 @@ impl Initiator {
     pub fn new(
         static_public: PublicKey,
         static_private: StaticSecret,
+        static_preshared: StaticSecret,
         responder_static_public: PublicKey,
     ) -> Self {
+        let ephemeral_private = StaticSecret::random();
+        let ephemeral_public: PublicKey = (&ephemeral_private).into();
         Self {
             sender_index: OsRng.next_u32(),
             chaining_key: Default::default(),
             hash: Default::default(),
+            ephemeral_private,
+            ephemeral_public,
             static_private,
             static_public,
+            static_preshared,
             responder_static_public,
             last_received_cookie: Default::default(),
         }
@@ -385,14 +399,12 @@ impl Initiator {
             blake2s_add(self.chaining_key, IDENTIFIER),
             self.responder_static_public,
         );
-        let ephemeral_private = EphemeralSecret::random();
-        let unencrypted_ephemeral: PublicKey = (&ephemeral_private).into();
-        self.hash = blake2s_add(self.hash, unencrypted_ephemeral);
-        let mut temp = hmac_blake2s(self.chaining_key, unencrypted_ephemeral)?;
+        self.hash = blake2s_add(self.hash, self.ephemeral_public);
+        let mut temp = hmac_blake2s(self.chaining_key, self.ephemeral_public)?;
         self.chaining_key = hmac_blake2s(temp, &[0x1])?;
         temp = hmac_blake2s(
             self.chaining_key,
-            ephemeral_private.diffie_hellman(&self.responder_static_public),
+            self.ephemeral_private.diffie_hellman(&self.responder_static_public),
         )?;
         self.chaining_key = hmac_blake2s(temp, &[0x1])?;
         let mut key = hmac_blake2s_add(temp, self.chaining_key, &[0x2])?;
@@ -412,7 +424,7 @@ impl Initiator {
         self.hash = blake2s_add(self.hash, &encrypted_timestamp);
         let handshake = EncryptedHandshakeInitiation {
             sender_index: self.sender_index,
-            unencrypted_ephemeral,
+            unencrypted_ephemeral: self.ephemeral_public,
             encrypted_static,
             encrypted_timestamp,
         };
@@ -432,6 +444,60 @@ impl Initiator {
         mac2.encode_to_vec(&mut buffer);
         Ok(buffer)
     }
+
+    pub fn on_handshake_response(
+        &mut self,
+        data: &[u8],
+        response: EncryptedHandshakeResponse,
+        macs: Macs,
+    ) -> Result<HandshakeResponse, Error> {
+        self.hash = blake2s_add(self.hash, &response.unencrypted_ephemeral);
+        let mut temp = hmac_blake2s(self.chaining_key, response.unencrypted_ephemeral)?;
+        self.chaining_key = hmac_blake2s(temp, &[0x1])?;
+        temp = hmac_blake2s(
+            &self.chaining_key,
+            self.ephemeral_private.diffie_hellman(&response.unencrypted_ephemeral),
+        )?;
+        self.chaining_key = hmac_blake2s(temp, &[0x1])?;
+        temp = hmac_blake2s(
+            &self.chaining_key,
+            self.static_private.diffie_hellman(&response.unencrypted_ephemeral),
+        )?;
+        self.chaining_key = hmac_blake2s(temp, &[0x1])?;
+        temp = hmac_blake2s(&self.chaining_key, &self.static_preshared)?;
+        self.chaining_key = hmac_blake2s(temp, &[0x1])?;
+        let temp2 = hmac_blake2s_add(temp, &self.chaining_key, &[0x2])?;
+        let key = hmac_blake2s_add(temp, &temp2, &[0x3])?;
+        self.hash = blake2s_add(self.hash, &temp2);
+        let decrypted_nothing = aead_decrypt(&key, 0, &response.encrypted_nothing, &self.hash)?;
+        if !decrypted_nothing.is_empty() {
+            return Err(Error::Proto);
+        }
+        self.hash = blake2s_add(self.hash, decrypted_nothing.as_slice());
+        let mac1: Mac = keyed_blake2s(
+            blake2s_add(LABEL_MAC1, &self.static_public),
+            &data[..(HANDSHAKE_RESPONSE_LEN - MAC_LEN - MAC_LEN)],
+        )?
+        .into();
+        if mac1 != macs.mac1 {
+            return Err(Error::Proto);
+        }
+        let mac2: Mac = match self.last_received_cookie.as_ref() {
+            Some(cookie) => keyed_blake2s(
+                cookie,
+                &data[..(HANDSHAKE_RESPONSE_LEN - MAC_LEN)],
+            )?.into(),
+            None => Mac::zero(),
+        };
+        if mac2 != macs.mac2 {
+            return Err(Error::Proto);
+        }
+        Ok(HandshakeResponse{
+            sender_index: response.sender_index,
+            receiver_index: response.receiver_index,
+            unencrypted_ephemeral: response.unencrypted_ephemeral,
+        })
+    }
 }
 
 pub struct Responder {
@@ -439,6 +505,8 @@ pub struct Responder {
     receiver_index: u32,
     hash: [u8; HASH_LEN],
     chaining_key: [u8; CHAINING_KEY_LEN],
+    ephemeral_private: StaticSecret,
+    ephemeral_public: PublicKey,
     static_public: PublicKey,
     static_private: StaticSecret,
     static_preshared: StaticSecret,
@@ -452,11 +520,15 @@ impl Responder {
         static_private: StaticSecret,
         static_preshared: StaticSecret,
     ) -> Self {
+        let ephemeral_private = StaticSecret::random();
+        let ephemeral_public: PublicKey = (&ephemeral_private).into();
         Self {
             sender_index: OsRng.next_u32(),
             receiver_index: Default::default(),
             hash: Default::default(),
             chaining_key: Default::default(),
+            ephemeral_private,
+            ephemeral_public,
             static_private,
             static_public,
             static_preshared,
@@ -467,36 +539,36 @@ impl Responder {
 
     /// `data` the whole message
     pub fn on_handshake_initiation(
-        &self,
+        &mut self,
         data: &[u8],
         initiation: EncryptedHandshakeInitiation,
         macs: Macs,
     ) -> Result<HandshakeInitiation, Error> {
-        let mut chaining_key = blake2s(CONSTRUCTION.as_bytes());
-        let mut hash = blake2s_add(blake2s_add(chaining_key, IDENTIFIER), self.static_public);
-        hash = blake2s_add(hash, &initiation.unencrypted_ephemeral);
-        let mut temp = hmac_blake2s(chaining_key, initiation.unencrypted_ephemeral)?;
-        chaining_key = hmac_blake2s(temp, &[0x1])?;
+        self.chaining_key = blake2s(CONSTRUCTION.as_bytes());
+        self.hash = blake2s_add(blake2s_add(self.chaining_key, IDENTIFIER), self.static_public);
+        self.hash = blake2s_add(self.hash, &initiation.unencrypted_ephemeral);
+        let mut temp = hmac_blake2s(self.chaining_key, initiation.unencrypted_ephemeral)?;
+        self.chaining_key = hmac_blake2s(temp, &[0x1])?;
         temp = hmac_blake2s(
-            chaining_key,
+            self.chaining_key,
             self.static_private
                 .diffie_hellman(&initiation.unencrypted_ephemeral),
         )?;
-        chaining_key = hmac_blake2s(temp, &[0x1])?;
-        let mut key = hmac_blake2s_add(temp, chaining_key, &[0x2])?;
-        let decrypted_static = aead_decrypt(&key, 0, &initiation.encrypted_static, hash)?;
+        self.chaining_key = hmac_blake2s(temp, &[0x1])?;
+        let mut key = hmac_blake2s_add(temp, self.chaining_key, &[0x2])?;
+        let decrypted_static = aead_decrypt(&key, 0, &initiation.encrypted_static, self.hash)?;
         let decrypted_static: [u8; PUBLIC_KEY_LEN] =
-            decrypted_static.try_into().map_err(Error::proto)?;
+            decrypted_static.try_into().map_err(Error::map)?;
         let decrypted_static: PublicKey = decrypted_static.into();
-        hash = blake2s_add(hash, &initiation.encrypted_static);
+        self.hash = blake2s_add(self.hash, &initiation.encrypted_static);
         temp = hmac_blake2s(
-            chaining_key,
+            self.chaining_key,
             self.static_private.diffie_hellman(&decrypted_static),
         )?;
-        chaining_key = hmac_blake2s(temp, &[0x1])?;
-        key = hmac_blake2s_add(temp, chaining_key, &[0x2])?;
-        let decrypted_timestamp = aead_decrypt(&key, 0, &initiation.encrypted_timestamp, hash)?;
-        //hash = blake2s_add(hash, &initiation.encrypted_timestamp);
+        self.chaining_key = hmac_blake2s(temp, &[0x1])?;
+        key = hmac_blake2s_add(temp, self.chaining_key, &[0x2])?;
+        let decrypted_timestamp = aead_decrypt(&key, 0, &initiation.encrypted_timestamp, self.hash)?;
+        self.hash = blake2s_add(self.hash, &initiation.encrypted_timestamp);
         let mac1: Mac = keyed_blake2s(
             blake2s_add(LABEL_MAC1, &self.static_public),
             &data[..(HANDSHAKE_INITIATION_LEN - MAC_LEN - MAC_LEN)],
@@ -523,7 +595,7 @@ impl Responder {
             timestamp: decrypted_timestamp
                 .as_slice()
                 .try_into()
-                .map_err(Error::proto)?,
+                .map_err(Error::map)?,
         })
     }
 
@@ -531,21 +603,18 @@ impl Responder {
         &mut self,
         initiation: &HandshakeInitiation,
     ) -> Result<Vec<u8>, Error> {
-        let ephemeral_private = StaticSecret::random();
-        let unencrypted_ephemeral: PublicKey = (&ephemeral_private).into();
         self.receiver_index = initiation.sender_index;
-        self.hash = blake2s_add(self.hash, &unencrypted_ephemeral);
-        self.chaining_key = blake2s(CONSTRUCTION.as_bytes()); // TODO ???
-        let mut temp = hmac_blake2s(self.chaining_key, unencrypted_ephemeral)?;
+        self.hash = blake2s_add(self.hash, &self.ephemeral_public);
+        let mut temp = hmac_blake2s(self.chaining_key, self.ephemeral_public)?;
         self.chaining_key = hmac_blake2s(temp, &[0x1])?;
         temp = hmac_blake2s(
             &self.chaining_key,
-            ephemeral_private.diffie_hellman(&initiation.unencrypted_ephemeral),
+            self.ephemeral_private.diffie_hellman(&initiation.unencrypted_ephemeral),
         )?;
         self.chaining_key = hmac_blake2s(temp, &[0x1])?;
         temp = hmac_blake2s(
             &self.chaining_key,
-            ephemeral_private.diffie_hellman(&initiation.static_public),
+            self.ephemeral_private.diffie_hellman(&initiation.static_public),
         )?;
         self.chaining_key = hmac_blake2s(temp, &[0x1])?;
         temp = hmac_blake2s(&self.chaining_key, &self.static_preshared)?;
@@ -555,7 +624,7 @@ impl Responder {
         self.hash = blake2s_add(self.hash, &temp2);
         let encrypted_nothing = aead(&key, 0, &[], &self.hash)?;
         let encrypted_nothing: [u8; ENCRYPTED_NOTHING_LEN] =
-            encrypted_nothing.try_into().map_err(Error::proto)?;
+            encrypted_nothing.try_into().map_err(Error::map)?;
         let encrypted_nothing = EncryptedNothing {
             data: encrypted_nothing,
         };
@@ -563,7 +632,7 @@ impl Responder {
         let response = EncryptedHandshakeResponse {
             sender_index: self.sender_index,
             receiver_index: self.receiver_index,
-            unencrypted_ephemeral,
+            unencrypted_ephemeral: self.ephemeral_public,
             encrypted_nothing,
         };
         let mut buffer = Vec::with_capacity(HANDSHAKE_RESPONSE_LEN);
@@ -601,7 +670,7 @@ impl Decode for u32 {
                 .get(..4)
                 .ok_or(Error::Proto)?
                 .try_into()
-                .map_err(Error::proto)?,
+                .map_err(Error::map)?,
         );
         Ok((n, &slice[4..]))
     }
@@ -619,7 +688,7 @@ impl Decode for PublicKey {
             .get(..PUBLIC_KEY_LEN)
             .ok_or(Error::Proto)?
             .try_into()
-            .map_err(Error::proto)?;
+            .map_err(Error::map)?;
         Ok((bytes.into(), &slice[PUBLIC_KEY_LEN..]))
     }
 }
@@ -642,7 +711,7 @@ const PUBLIC_KEY_LEN: usize = 32;
 const ENCRYPTED_STATIC_LEN: usize = aead_len(PUBLIC_KEY_LEN);
 const MAC_LEN: usize = 16;
 const HANDSHAKE_INITIATION_LEN: usize = 148;
-const HANDSHAKE_RESPONSE_LEN: usize = 92; // TODO check
+const HANDSHAKE_RESPONSE_LEN: usize = 92;
 const COOKIE_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 const ENCRYPTED_NOTHING_LEN: usize = aead_len(0);
@@ -668,7 +737,7 @@ fn blake2s_add(slice1: impl AsRef<[u8]>, slice2: impl AsRef<[u8]>) -> [u8; 32] {
 
 fn hmac_blake2s(key: impl AsRef<[u8]>, input: impl AsRef<[u8]>) -> Result<[u8; 32], Error> {
     use blake2::digest::Mac;
-    let mut hasher = Blake2sMac256::new_from_slice(key.as_ref()).map_err(Error::proto)?;
+    let mut hasher = Blake2sMac256::new_from_slice(key.as_ref()).map_err(Error::map)?;
     hasher.update(input.as_ref());
     Ok(hasher.finalize_fixed().into())
 }
@@ -679,7 +748,7 @@ fn hmac_blake2s_add(
     input2: impl AsRef<[u8]>,
 ) -> Result<[u8; 32], Error> {
     use blake2::digest::Mac;
-    let mut hasher = Blake2sMac256::new_from_slice(key.as_ref()).map_err(Error::proto)?;
+    let mut hasher = Blake2sMac256::new_from_slice(key.as_ref()).map_err(Error::map)?;
     hasher.update(input1.as_ref());
     hasher.update(input2.as_ref());
     Ok(hasher.finalize_fixed().into())
@@ -687,7 +756,7 @@ fn hmac_blake2s_add(
 
 fn keyed_blake2s(key: impl AsRef<[u8]>, input: impl AsRef<[u8]>) -> Result<[u8; 16], Error> {
     use blake2::digest::Mac;
-    let mut hasher = Blake2sMac::new_from_slice(key.as_ref()).map_err(Error::proto)?;
+    let mut hasher = Blake2sMac::new_from_slice(key.as_ref()).map_err(Error::map)?;
     hasher.update(input.as_ref());
     Ok(hasher.finalize_fixed().into())
 }
@@ -708,7 +777,7 @@ fn aead(
     };
     cipher
         .encrypt((&nonce).into(), payload)
-        .map_err(Error::proto)
+        .map_err(Error::map)
 }
 
 fn aead_decrypt(
@@ -727,7 +796,7 @@ fn aead_decrypt(
     };
     cipher
         .decrypt((&nonce).into(), payload)
-        .map_err(Error::proto)
+        .map_err(Error::map)
 }
 
 #[cfg(test)]
@@ -750,37 +819,6 @@ mod tests {
     }
 
     #[test]
-    fn on_handshake_initiation() {
-        let initiator_static_secret = StaticSecret::random();
-        let initiator_static_public: PublicKey = (&initiator_static_secret).into();
-        let responder_static_secret = StaticSecret::random();
-        let responder_static_public: PublicKey = (&responder_static_secret).into();
-        let responder_static_preshared = StaticSecret::random();
-        let mut initiator = Initiator::new(
-            initiator_static_public,
-            initiator_static_secret,
-            responder_static_public,
-        );
-        let responder = Responder::new(
-            responder_static_public,
-            responder_static_secret,
-            responder_static_preshared,
-        );
-        let handshake_bytes = initiator.handshake_initiation().unwrap();
-        let (message, slice) = Message::decode_from_slice(handshake_bytes.as_slice()).unwrap();
-        assert_eq!(MessageType::HandshakeInitiation, message.get_type());
-        assert!(slice.is_empty());
-        match message {
-            Message::HandshakeInitiation(message, macs) => {
-                responder
-                    .on_handshake_initiation(handshake_bytes.as_slice(), message, macs)
-                    .unwrap();
-            }
-            _ => assert!(false, "invalid message type"),
-        }
-    }
-
-    #[test]
     fn encode_decode_handshake_response_wg() {
         let bytes = VALID_HANDSHAKE_RESPONSE;
         for n in 0..(bytes.len() - 1) {
@@ -792,6 +830,50 @@ mod tests {
         let mut buffer = Vec::new();
         message.encode_to_vec(&mut buffer);
         assert_eq!(bytes.as_slice(), buffer.as_slice());
+    }
+
+    #[test]
+    fn handshake() {
+        let initiator_static_secret = StaticSecret::random();
+        let initiator_static_public: PublicKey = (&initiator_static_secret).into();
+        let responder_static_secret = StaticSecret::random();
+        let responder_static_public: PublicKey = (&responder_static_secret).into();
+        let static_preshared = StaticSecret::random();
+        let mut initiator = Initiator::new(
+            initiator_static_public,
+            initiator_static_secret,
+            static_preshared.clone(),
+            responder_static_public,
+        );
+        let mut responder = Responder::new(
+            responder_static_public,
+            responder_static_secret,
+            static_preshared,
+        );
+        let initiation_bytes = initiator.handshake_initiation().unwrap();
+        let (message, slice) = Message::decode_from_slice(initiation_bytes.as_slice()).unwrap();
+        assert_eq!(MessageType::HandshakeInitiation, message.get_type());
+        assert!(slice.is_empty());
+        let initiation = match message {
+            Message::HandshakeInitiation(message, macs) => {
+                responder
+                    .on_handshake_initiation(initiation_bytes.as_slice(), message, macs)
+                    .unwrap()
+            }
+            _ => return assert!(false, "invalid message type"),
+        };
+        let response_bytes = responder.handshake_response(&initiation).unwrap();
+        let (message, slice) = Message::decode_from_slice(response_bytes.as_slice()).unwrap();
+        assert_eq!(MessageType::HandshakeResponse, message.get_type());
+        assert!(slice.is_empty());
+        let _response = match message {
+            Message::HandshakeResponse(message, macs) => {
+                initiator
+                    .on_handshake_response(response_bytes.as_slice(), message, macs)
+                    .unwrap()
+            }
+            _ => return assert!(false, "invalid message type"),
+        };
     }
 
     // a real packet from wg in-kernel implementation
@@ -816,29 +898,5 @@ mod tests {
         0x66, 0x63, 0x2a, 0xda, 0x57, 0x98, 0x58, 0x72, 0x7b, 0x79, 0xbf, 0x38, 0x57, 0x3f, 0x63,
         0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00,
-    ];
-
-    const RESPONDER_PUBLIC_KEY: [u8; PUBLIC_KEY_LEN] = [
-        0x4d, 0xd3, 0xe9, 0x23, 0x1c, 0x4d, 0xe3, 0x84, 0x0b, 0x5c, 0x80, 0x4f, 0x3c, 0x6a, 0xe8,
-        0xf5, 0xfe, 0xd5, 0x6a, 0x47, 0x8f, 0xd8, 0x1f, 0xd8, 0xf1, 0xd9, 0x1b, 0x25, 0x41, 0x44,
-        0xdd, 0x4f,
-    ];
-
-    const RESPONDER_PRIVATE_KEY: [u8; PUBLIC_KEY_LEN] = [
-        0x20, 0xa4, 0x00, 0xa6, 0x17, 0x65, 0x1a, 0x1e, 0x89, 0x22, 0x32, 0x7d, 0xc3, 0x38, 0x37,
-        0x70, 0xcc, 0xa6, 0xd1, 0x88, 0xdf, 0x62, 0x88, 0x36, 0xf3, 0x58, 0x15, 0x01, 0x1b, 0xcd,
-        0x26, 0x6b,
-    ];
-
-    const INITIATOR_PUBLIC_KEY: [u8; PUBLIC_KEY_LEN] = [
-        0x53, 0xa4, 0xb8, 0x5a, 0xca, 0x6c, 0x15, 0xa6, 0xfa, 0x76, 0x3a, 0x5b, 0x30, 0xc7, 0xad,
-        0xb8, 0x20, 0x2a, 0xf9, 0x50, 0x0e, 0xc0, 0x95, 0x19, 0x46, 0xb5, 0xa4, 0xf6, 0x45, 0x54,
-        0x4c, 0x1f,
-    ];
-
-    const INITIATOR_PRIVATE_KEY: [u8; PUBLIC_KEY_LEN] = [
-        0x68, 0x00, 0x0e, 0xeb, 0x5a, 0x05, 0x6e, 0x71, 0xfc, 0x85, 0xe5, 0x30, 0x3a, 0xf7, 0x8c,
-        0xee, 0x4b, 0x69, 0xf4, 0x0d, 0x7a, 0xe7, 0x0b, 0x9b, 0xab, 0x12, 0xf9, 0x07, 0x2e, 0x4a,
-        0x66, 0x5a,
     ];
 }

@@ -7,7 +7,7 @@ pub enum Error {
 }
 
 impl Error {
-    pub(crate) fn proto<T>(_: T) -> Error {
+    pub(crate) fn map<T>(_: T) -> Error {
         Error::Proto
     }
 }
