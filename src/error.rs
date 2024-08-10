@@ -1,28 +1,23 @@
 use std::fmt::Debug;
 use std::fmt::Display;
+use std::fmt::Formatter;
 
-pub enum Error {
-    Proto,
-    Other(String),
-}
+pub struct Error;
 
 impl Error {
     pub(crate) fn map<T>(_: T) -> Error {
-        Error::Proto
+        Error
     }
 }
 
 impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Proto => write!(f, "protocol error"),
-            Self::Other(x) => write!(f, "{}", x),
-        }
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "wgproto error")
     }
 }
 
 impl Debug for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         Display::fmt(self, f)
     }
 }
