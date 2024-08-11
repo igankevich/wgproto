@@ -1,12 +1,12 @@
 use blake2::digest::FixedOutput;
 use blake2::Blake2s256;
 use blake2::Blake2sMac;
-use blake2::Blake2sMac256;
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::ChaCha20Poly1305;
 use tai64::Tai64N;
 use x25519_dalek::PublicKey;
 use x25519_dalek::StaticSecret;
+use hmac::SimpleHmac;
 
 use crate::Encode;
 use crate::EncryptedHandshakeInitiation;
@@ -157,7 +157,7 @@ impl Session {
         }
         self.hash = blake2s_add(self.hash, decrypted_nothing.as_slice());
         verify_message(
-            data,
+            &data[..HANDSHAKE_RESPONSE_LEN],
             &self.static_public,
             self.last_received_cookie.as_ref(),
         )?;
@@ -227,7 +227,11 @@ impl Session {
         let decrypted_timestamp =
             aead_decrypt(&key, 0, &initiation.encrypted_timestamp, self.hash)?;
         self.hash = blake2s_add(self.hash, &initiation.encrypted_timestamp);
-        verify_message(data, &self.static_public, self.last_sent_cookie.as_ref())?;
+        verify_message(
+            &data[..HANDSHAKE_INITIATION_LEN],
+            &self.static_public,
+            self.last_sent_cookie.as_ref(),
+        )?;
         self.other_static_public = Some(decrypted_static);
         Ok(HandshakeInitiation {
             sender_index: initiation.sender_index,
@@ -309,10 +313,7 @@ fn verify_message(
     let mac1_offset = mac2_offset - MAC_LEN;
     let other_mac1 = &data[mac1_offset..(mac1_offset + MAC_LEN)];
     let other_mac2 = &data[mac2_offset..(mac2_offset + MAC_LEN)];
-    let mac1 = keyed_blake2s(
-        blake2s_add(LABEL_MAC1, static_public),
-        &data[..mac1_offset],
-    )?;
+    let mac1 = keyed_blake2s(blake2s_add(LABEL_MAC1, static_public), &data[..mac1_offset])?;
     if mac1 != other_mac1 {
         return Err(Error);
     }
@@ -342,8 +343,8 @@ fn blake2s_add(slice1: impl AsRef<[u8]>, slice2: impl AsRef<[u8]>) -> [u8; 32] {
 }
 
 fn hmac_blake2s(key: impl AsRef<[u8]>, input: impl AsRef<[u8]>) -> Result<[u8; 32], Error> {
-    use blake2::digest::Mac;
-    let mut hasher = Blake2sMac256::new_from_slice(key.as_ref()).map_err(Error::map)?;
+    use hmac::Mac;
+    let mut hasher = HmacBlake2s::new_from_slice(key.as_ref()).map_err(Error::map)?;
     hasher.update(input.as_ref());
     Ok(hasher.finalize_fixed().into())
 }
@@ -353,8 +354,8 @@ fn hmac_blake2s_add(
     input1: impl AsRef<[u8]>,
     input2: impl AsRef<[u8]>,
 ) -> Result<[u8; 32], Error> {
-    use blake2::digest::Mac;
-    let mut hasher = Blake2sMac256::new_from_slice(key.as_ref()).map_err(Error::map)?;
+    use hmac::Mac;
+    let mut hasher = HmacBlake2s::new_from_slice(key.as_ref()).map_err(Error::map)?;
     hasher.update(input1.as_ref());
     hasher.update(input2.as_ref());
     Ok(hasher.finalize_fixed().into())
@@ -403,6 +404,7 @@ fn aead_decrypt(
 
 pub type ChainingKey = [u8; CHAINING_KEY_LEN];
 pub type SessionHash = [u8; HASH_LEN];
+type HmacBlake2s = SimpleHmac<Blake2s256>;
 
 const CHAINING_KEY_LEN: usize = 32;
 const HASH_LEN: usize = 32;
@@ -455,6 +457,26 @@ mod tests {
         message.encode_to_vec(&mut buffer);
         encode_macs(&initiator_static_public, None, &mut buffer).unwrap();
         assert_eq!(bytes.as_slice(), buffer.as_slice());
+    }
+
+    #[test]
+    fn respond_wg() {
+        let responder_static_public: PublicKey = RESPONDER_STATIC_PUBLIC.into();
+        let responder_static_secret: StaticSecret = RESPONDER_STATIC_SECRET.into();
+        let static_preshared: StaticSecret = [0_u8; PUBLIC_KEY_LEN].into();
+        let bytes = VALID_HANDSHAKE_INITIATION;
+        let (message, _slice) = Message::decode_from_slice(bytes.as_slice()).unwrap();
+        match message {
+            Message::HandshakeInitiation(message) => Session::respond(
+                responder_static_public,
+                responder_static_secret,
+                static_preshared,
+                bytes.as_slice(),
+                message,
+            )
+            .unwrap(),
+            _ => return assert!(false, "invalid message type"),
+        };
     }
 
     #[test]
@@ -527,9 +549,21 @@ mod tests {
         0xdd, 0x4f,
     ];
 
+    const RESPONDER_STATIC_SECRET: [u8; PUBLIC_KEY_LEN] = [
+        0x20, 0xa4, 0x00, 0xa6, 0x17, 0x65, 0x1a, 0x1e, 0x89, 0x22, 0x32, 0x7d, 0xc3, 0x38, 0x37,
+        0x70, 0xcc, 0xa6, 0xd1, 0x88, 0xdf, 0x62, 0x88, 0x36, 0xf3, 0x58, 0x15, 0x01, 0x1b, 0xcd,
+        0x26, 0x6b,
+    ];
+
     const INITIATOR_STATIC_PUBLIC: [u8; PUBLIC_KEY_LEN] = [
         0x53, 0xa4, 0xb8, 0x5a, 0xca, 0x6c, 0x15, 0xa6, 0xfa, 0x76, 0x3a, 0x5b, 0x30, 0xc7, 0xad,
         0xb8, 0x20, 0x2a, 0xf9, 0x50, 0x0e, 0xc0, 0x95, 0x19, 0x46, 0xb5, 0xa4, 0xf6, 0x45, 0x54,
         0x4c, 0x1f,
+    ];
+
+    const _INITIATOR_STATIC_SECRET: [u8; PUBLIC_KEY_LEN] = [
+        0x68, 0x00, 0x0e, 0xeb, 0x5a, 0x05, 0x6e, 0x71, 0xfc, 0x85, 0xe5, 0x30, 0x3a, 0xf7, 0x8c,
+        0xee, 0x4b, 0x69, 0xf4, 0x0d, 0x7a, 0xe7, 0x0b, 0x9b, 0xab, 0x12, 0xf9, 0x07, 0x2e, 0x4a,
+        0x66, 0x5a,
     ];
 }
