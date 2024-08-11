@@ -42,3 +42,15 @@ impl Encode for PublicKey {
         buffer.extend_from_slice(self.as_bytes().as_slice());
     }
 }
+
+impl Decode for Vec<u8> {
+    fn decode_from_slice(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
+        Ok((slice.to_vec(), &[]))
+    }
+}
+
+impl Encode for &[u8] {
+    fn encode_to_vec(&self, buffer: &mut Vec<u8>) {
+        buffer.extend_from_slice(self);
+    }
+}

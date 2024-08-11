@@ -390,6 +390,7 @@ dependencies = [
  "rand_core",
  "tai64",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

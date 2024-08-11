@@ -7,6 +7,7 @@ use crate::Error;
 pub enum MessageType {
     HandshakeInitiation = 1,
     HandshakeResponse = 2,
+    PacketData = 4,
 }
 
 impl Decode for MessageType {
@@ -30,6 +31,7 @@ impl TryFrom<u8> for MessageType {
         match other {
             1 => Ok(Self::HandshakeInitiation),
             2 => Ok(Self::HandshakeResponse),
+            4 => Ok(Self::PacketData),
             _ => Err(Error),
         }
     }

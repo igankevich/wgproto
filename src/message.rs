@@ -1,6 +1,7 @@
 use tai64::Tai64N;
 use x25519_dalek::PublicKey;
 
+use crate::Counter;
 use crate::Decode;
 use crate::Encode;
 use crate::EncryptedBytes;
@@ -13,6 +14,7 @@ use crate::PUBLIC_KEY_LEN;
 pub enum Message {
     HandshakeInitiation(EncryptedHandshakeInitiation),
     HandshakeResponse(EncryptedHandshakeResponse),
+    PacketData(EncryptedPacketData),
 }
 
 impl Message {
@@ -20,6 +22,7 @@ impl Message {
         match self {
             Message::HandshakeInitiation(..) => MessageType::HandshakeInitiation,
             Message::HandshakeResponse(..) => MessageType::HandshakeResponse,
+            Message::PacketData(..) => MessageType::PacketData,
         }
     }
 }
@@ -40,6 +43,10 @@ impl Decode for Message {
                 let slice = slice.get((MAC_LEN + MAC_LEN)..).ok_or(Error)?;
                 (Message::HandshakeResponse(message), slice)
             }
+            MessageType::PacketData => {
+                let (message, slice) = EncryptedPacketData::decode_from_slice(slice)?;
+                (Message::PacketData(message), slice)
+            }
         };
         Ok((message, slice))
     }
@@ -54,6 +61,10 @@ impl Encode for Message {
             }
             Message::HandshakeResponse(message) => {
                 MessageType::HandshakeResponse.encode_to_vec(buffer);
+                message.encode_to_vec(buffer);
+            }
+            Message::PacketData(message) => {
+                MessageType::PacketData.encode_to_vec(buffer);
                 message.encode_to_vec(buffer);
             }
         }
@@ -132,6 +143,36 @@ impl Encode for EncryptedHandshakeResponse {
         self.receiver_index.encode_to_vec(buffer);
         self.unencrypted_ephemeral.encode_to_vec(buffer);
         self.encrypted_nothing.encode_to_vec(buffer);
+    }
+}
+
+pub struct EncryptedPacketData {
+    pub receiver_index: SessionIndex,
+    pub counter: Counter,
+    pub encrypted_encapsulated_packet: Vec<u8>,
+}
+
+impl Decode for EncryptedPacketData {
+    fn decode_from_slice(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
+        let (receiver_index, slice) = SessionIndex::decode_from_slice(slice)?;
+        let (counter, slice) = Counter::decode_from_slice(slice)?;
+        let (encrypted_encapsulated_packet, slice) = <Vec<u8>>::decode_from_slice(slice)?;
+        Ok((
+            Self {
+                receiver_index,
+                counter,
+                encrypted_encapsulated_packet,
+            },
+            slice,
+        ))
+    }
+}
+
+impl Encode for EncryptedPacketData {
+    fn encode_to_vec(&self, buffer: &mut Vec<u8>) {
+        self.receiver_index.encode_to_vec(buffer);
+        self.counter.encode_to_vec(buffer);
+        self.encrypted_encapsulated_packet.as_slice().encode_to_vec(buffer);
     }
 }
 
