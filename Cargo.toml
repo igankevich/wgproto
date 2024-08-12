@@ -2,6 +2,7 @@
 name = "wgproto"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 blake2 = { version = "0.10.6", features = ["std"], default-features = false }

@@ -213,8 +213,7 @@ impl Session {
             sending_key_counter: Default::default(),
             receiving_key_counter: Default::default(),
         };
-        let initiation =
-            session.on_handshake_initiation(data, initiation)?;
+        let initiation = session.on_handshake_initiation(data, initiation)?;
         let response = session.handshake_response(&initiation)?;
         let (temp2, temp3) = session.derive_keys()?;
         session.receiving_key = temp2;
@@ -539,13 +538,13 @@ mod tests {
     }
 
     #[test]
-    fn respond_wg() {
+    fn respond_wg() -> Result<(), Error> {
         let initiator_static_public: PublicKey = INITIATOR_STATIC_PUBLIC.into();
         let responder_static_public: PublicKey = RESPONDER_STATIC_PUBLIC.into();
         let responder_static_secret: PrivateKey = RESPONDER_STATIC_SECRET.into();
         let static_preshared: PresharedKey = [0_u8; PUBLIC_KEY_LEN].into();
         let bytes = VALID_HANDSHAKE_INITIATION;
-        let (message, _slice) = Message::decode_from_slice(bytes.as_slice()).unwrap();
+        let (message, _slice) = Message::decode_from_slice(bytes.as_slice())?;
         let (_responder, initiation, _) = match message {
             Message::HandshakeInitiation(message) => Session::respond(
                 responder_static_public,
@@ -553,15 +552,15 @@ mod tests {
                 static_preshared,
                 bytes.as_slice(),
                 message,
-            )
-            .unwrap(),
-            _ => return assert!(false, "invalid message type"),
+            )?,
+            _ => return Err(Error),
         };
         assert_eq!(initiator_static_public, initiation.static_public);
+        Ok(())
     }
 
     #[test]
-    fn handshake() {
+    fn handshake() -> Result<(), Error> {
         let initiator_static_secret = PrivateKey::random();
         let initiator_static_public: PublicKey = (&initiator_static_secret).into();
         let responder_static_secret = PrivateKey::random();
@@ -572,9 +571,8 @@ mod tests {
             initiator_static_secret,
             static_preshared.clone(),
             responder_static_public,
-        )
-        .unwrap();
-        let (message, slice) = Message::decode_from_slice(initiation_bytes.as_slice()).unwrap();
+        )?;
+        let (message, slice) = Message::decode_from_slice(initiation_bytes.as_slice())?;
         assert_eq!(MessageType::HandshakeInitiation, message.get_type());
         assert!(slice.is_empty());
         let (mut responder, initiation, response_bytes) = match message {
@@ -584,32 +582,32 @@ mod tests {
                 static_preshared,
                 initiation_bytes.as_slice(),
                 message,
-            )
-            .unwrap(),
-            _ => return assert!(false, "invalid message type"),
+            )?,
+            _ => return Err(Error),
         };
         assert_eq!(initiator_static_public, initiation.static_public);
-        let (message, slice) = Message::decode_from_slice(response_bytes.as_slice()).unwrap();
+        let (message, slice) = Message::decode_from_slice(response_bytes.as_slice())?;
         assert_eq!(MessageType::HandshakeResponse, message.get_type());
         assert!(slice.is_empty());
-        let _response = match message {
-            Message::HandshakeResponse(message) => initiator
-                .on_handshake_response(response_bytes.as_slice(), message)
-                .unwrap(),
-            _ => return assert!(false, "invalid message type"),
+        match message {
+            Message::HandshakeResponse(message) => {
+                initiator.on_handshake_response(response_bytes.as_slice(), message)?
+            }
+            _ => return Err(Error),
         };
         // keep alive
-        let message = initiator.send(&[]).unwrap();
+        let message = initiator.send(&[])?;
         let mut buffer = Vec::new();
         message.encode_to_vec(&mut buffer);
-        let (message, slice) = Message::decode_from_slice(buffer.as_slice()).unwrap();
+        let (message, slice) = Message::decode_from_slice(buffer.as_slice())?;
         assert_eq!(MessageType::PacketData, message.get_type());
         assert!(slice.is_empty());
         let packet_data = match message {
-            Message::PacketData(message) => responder.receive(&message).unwrap(),
-            _ => return assert!(false, "invalid message type"),
+            Message::PacketData(message) => responder.receive(&message)?,
+            _ => return Err(Error),
         };
         assert!(packet_data.is_empty());
+        Ok(())
     }
 
     // a real packet from wg in-kernel implementation
