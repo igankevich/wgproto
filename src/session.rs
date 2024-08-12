@@ -190,7 +190,6 @@ impl Session {
         static_public: PublicKey,
         static_private: PrivateKey,
         static_preshared: PresharedKey,
-        initiator_static_public: Option<&PublicKey>,
         data: &[u8],
         initiation: EncryptedHandshakeInitiation,
     ) -> Result<(Self, HandshakeInitiation, Vec<u8>), Error> {
@@ -215,7 +214,7 @@ impl Session {
             receiving_key_counter: Default::default(),
         };
         let initiation =
-            session.on_handshake_initiation(data, initiation, initiator_static_public)?;
+            session.on_handshake_initiation(data, initiation)?;
         let response = session.handshake_response(&initiation)?;
         let (temp2, temp3) = session.derive_keys()?;
         session.receiving_key = temp2;
@@ -277,7 +276,6 @@ impl Session {
         &mut self,
         data: &[u8],
         initiation: EncryptedHandshakeInitiation,
-        initiator_static_public: Option<&PublicKey>,
     ) -> Result<HandshakeInitiation, Error> {
         self.chaining_key = blake2s(CONSTRUCTION.as_bytes());
         self.hash = blake2s_add(
@@ -298,12 +296,6 @@ impl Session {
         let decrypted_static: [u8; PUBLIC_KEY_LEN] =
             decrypted_static.try_into().map_err(Error::map)?;
         let decrypted_static: PublicKey = decrypted_static.into();
-        // TODO delete?
-        if let Some(initiator_static_public) = initiator_static_public {
-            if &decrypted_static != initiator_static_public {
-                return Err(Error);
-            }
-        }
         self.hash = blake2s_add(self.hash, &initiation.encrypted_static);
         temp = hmac_blake2s(
             &self.chaining_key,
@@ -554,18 +546,18 @@ mod tests {
         let static_preshared: PresharedKey = [0_u8; PUBLIC_KEY_LEN].into();
         let bytes = VALID_HANDSHAKE_INITIATION;
         let (message, _slice) = Message::decode_from_slice(bytes.as_slice()).unwrap();
-        match message {
+        let (_responder, initiation, _) = match message {
             Message::HandshakeInitiation(message) => Session::respond(
                 responder_static_public,
                 responder_static_secret,
                 static_preshared,
-                Some(&initiator_static_public),
                 bytes.as_slice(),
                 message,
             )
             .unwrap(),
             _ => return assert!(false, "invalid message type"),
         };
+        assert_eq!(initiator_static_public, initiation.static_public);
     }
 
     #[test]
@@ -585,18 +577,18 @@ mod tests {
         let (message, slice) = Message::decode_from_slice(initiation_bytes.as_slice()).unwrap();
         assert_eq!(MessageType::HandshakeInitiation, message.get_type());
         assert!(slice.is_empty());
-        let (mut responder, _initiation, response_bytes) = match message {
+        let (mut responder, initiation, response_bytes) = match message {
             Message::HandshakeInitiation(message) => Session::respond(
                 responder_static_public,
                 responder_static_secret,
                 static_preshared,
-                Some(&initiator_static_public),
                 initiation_bytes.as_slice(),
                 message,
             )
             .unwrap(),
             _ => return assert!(false, "invalid message type"),
         };
+        assert_eq!(initiator_static_public, initiation.static_public);
         let (message, slice) = Message::decode_from_slice(response_bytes.as_slice()).unwrap();
         assert_eq!(MessageType::HandshakeResponse, message.get_type());
         assert!(slice.is_empty());
