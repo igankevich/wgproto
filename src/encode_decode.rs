@@ -6,27 +6,21 @@ pub trait Decode<C = ()> {
     fn decode_from_slice(slice: &[u8]) -> Result<(Self, &[u8]), Error>
     where
         Self: Sized;
-
-    // TODO
-    //fn decode_from_slice_with_context(slice: &[u8], context: C) -> Result<(Self, &[u8]), Error>
-    //where
-    //    Self: Sized;
 }
 
 pub trait Encode {
     fn encode_to_vec(&self, buffer: &mut Vec<u8>);
 }
 
-/*
-pub trait EncodeV2<C = ()> {
-    fn encode_to_vec_with_context(&self, buffer: &mut Vec<u8>, context: C);
+pub trait DecodeWithContext<C> {
+    fn decode_with_context(slice: &[u8], context: C) -> Result<(Self, &[u8]), Error>
+    where
+        Self: Sized;
 }
 
-impl<C> EncodeV2<C> for Encode {
-    fn encode_to_vec_with_context(&self, buffer: &mut Vec<u8>, context: C) {
-    }
+pub trait EncodeWithContext<C> {
+    fn encode_with_context(&self, buffer: &mut Vec<u8>, context: C);
 }
-*/
 
 impl<const N: usize> Decode for [u8; N] {
     fn decode_from_slice(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
@@ -77,15 +71,7 @@ mod tests {
 
     use super::*;
     use crate::tests::test_encode_decode_proxy;
-
-    #[derive(arbitrary::Arbitrary)]
-    struct PublicKeyProxy([u8; PUBLIC_KEY_LEN]);
-
-    impl From<PublicKeyProxy> for PublicKey {
-        fn from(other: PublicKeyProxy) -> Self {
-            other.0.into()
-        }
-    }
+    use crate::tests::PublicKeyProxy;
 
     #[test]
     fn encode_decode() {

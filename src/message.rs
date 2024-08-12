@@ -1,6 +1,9 @@
+use crate::Context;
 use crate::Counter;
 use crate::Decode;
+use crate::DecodeWithContext;
 use crate::Encode;
+use crate::EncodeWithContext;
 use crate::EncryptedBytes;
 use crate::Error;
 use crate::MessageType;
@@ -27,20 +30,21 @@ impl Message {
     }
 }
 
-impl Decode for Message {
-    fn decode_from_slice(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
+impl DecodeWithContext<Context<'_>> for Message {
+    fn decode_with_context<'a>(
+        slice: &'a [u8],
+        context: Context,
+    ) -> Result<(Self, &'a [u8]), Error> {
         let (message_type, slice) = MessageType::decode_from_slice(slice)?;
         let (message, slice) = match message_type {
             MessageType::HandshakeInitiation => {
-                let (message, slice) = EncryptedHandshakeInitiation::decode_from_slice(slice)?;
-                // skip macs
-                let slice = slice.get((MAC_LEN + MAC_LEN)..).ok_or(Error)?;
+                let (message, slice) =
+                    EncryptedHandshakeInitiation::decode_with_context(slice, context)?;
                 (Message::HandshakeInitiation(message), slice)
             }
             MessageType::HandshakeResponse => {
-                let (message, slice) = EncryptedHandshakeResponse::decode_from_slice(slice)?;
-                // skip macs
-                let slice = slice.get((MAC_LEN + MAC_LEN)..).ok_or(Error)?;
+                let (message, slice) =
+                    EncryptedHandshakeResponse::decode_with_context(slice, context)?;
                 (Message::HandshakeResponse(message), slice)
             }
             MessageType::PacketData => {
@@ -52,16 +56,16 @@ impl Decode for Message {
     }
 }
 
-impl Encode for Message {
-    fn encode_to_vec(&self, buffer: &mut Vec<u8>) {
+impl EncodeWithContext<Context<'_>> for Message {
+    fn encode_with_context(&self, buffer: &mut Vec<u8>, context: Context) {
         match self {
             Message::HandshakeInitiation(message) => {
                 MessageType::HandshakeInitiation.encode_to_vec(buffer);
-                message.encode_to_vec(buffer);
+                message.encode_with_context(buffer, context);
             }
             Message::HandshakeResponse(message) => {
                 MessageType::HandshakeResponse.encode_to_vec(buffer);
-                message.encode_to_vec(buffer);
+                message.encode_with_context(buffer, context);
             }
             Message::PacketData(message) => {
                 MessageType::PacketData.encode_to_vec(buffer);
@@ -86,12 +90,18 @@ pub struct EncryptedHandshakeInitiation {
     pub encrypted_timestamp: EncryptedTimestamp,
 }
 
-impl Decode for EncryptedHandshakeInitiation {
-    fn decode_from_slice(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
+impl DecodeWithContext<Context<'_>> for EncryptedHandshakeInitiation {
+    fn decode_with_context<'a>(
+        slice: &'a [u8],
+        context: Context,
+    ) -> Result<(Self, &'a [u8]), Error> {
         let (sender_index, slice) = SessionIndex::decode_from_slice(slice)?;
         let (unencrypted_ephemeral, slice) = PublicKey::decode_from_slice(slice)?;
         let (encrypted_static, slice) = EncryptedStatic::decode_from_slice(slice)?;
         let (encrypted_timestamp, slice) = EncryptedTimestamp::decode_from_slice(slice)?;
+        // skip macs
+        let slice = slice.get((MAC_LEN + MAC_LEN)..).ok_or(Error)?;
+        context.verify()?;
         Ok((
             Self {
                 sender_index,
@@ -104,12 +114,13 @@ impl Decode for EncryptedHandshakeInitiation {
     }
 }
 
-impl Encode for EncryptedHandshakeInitiation {
-    fn encode_to_vec(&self, buffer: &mut Vec<u8>) {
+impl EncodeWithContext<Context<'_>> for EncryptedHandshakeInitiation {
+    fn encode_with_context(&self, buffer: &mut Vec<u8>, context: Context<'_>) {
         self.sender_index.encode_to_vec(buffer);
         self.unencrypted_ephemeral.encode_to_vec(buffer);
         self.encrypted_static.encode_to_vec(buffer);
         self.encrypted_timestamp.encode_to_vec(buffer);
+        context.sign(buffer);
     }
 }
 
@@ -121,12 +132,18 @@ pub struct EncryptedHandshakeResponse {
     pub encrypted_nothing: EncryptedNothing,
 }
 
-impl Decode for EncryptedHandshakeResponse {
-    fn decode_from_slice(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
+impl DecodeWithContext<Context<'_>> for EncryptedHandshakeResponse {
+    fn decode_with_context<'a>(
+        slice: &'a [u8],
+        context: Context,
+    ) -> Result<(Self, &'a [u8]), Error> {
         let (sender_index, slice) = SessionIndex::decode_from_slice(slice)?;
         let (receiver_index, slice) = SessionIndex::decode_from_slice(slice)?;
         let (unencrypted_ephemeral, slice) = PublicKey::decode_from_slice(slice)?;
         let (encrypted_nothing, slice) = EncryptedNothing::decode_from_slice(slice)?;
+        // skip macs
+        let slice = slice.get((MAC_LEN + MAC_LEN)..).ok_or(Error)?;
+        context.verify()?;
         Ok((
             Self {
                 sender_index,
@@ -139,12 +156,13 @@ impl Decode for EncryptedHandshakeResponse {
     }
 }
 
-impl Encode for EncryptedHandshakeResponse {
-    fn encode_to_vec(&self, buffer: &mut Vec<u8>) {
+impl EncodeWithContext<Context<'_>> for EncryptedHandshakeResponse {
+    fn encode_with_context(&self, buffer: &mut Vec<u8>, context: Context) {
         self.sender_index.encode_to_vec(buffer);
         self.receiver_index.encode_to_vec(buffer);
         self.unencrypted_ephemeral.encode_to_vec(buffer);
         self.encrypted_nothing.encode_to_vec(buffer);
+        context.sign(buffer);
     }
 }
 
@@ -185,6 +203,7 @@ pub type EncryptedStatic = EncryptedBytes<ENCRYPTED_STATIC_LEN>;
 pub type EncryptedTimestamp = EncryptedBytes<ENCRYPTED_TAI_LEN>;
 pub type EncryptedNothing = EncryptedBytes<ENCRYPTED_NOTHING_LEN>;
 
+#[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
 pub struct Cookie {
     data: [u8; COOKIE_LEN],
 }
@@ -220,6 +239,7 @@ mod tests {
 
     use super::*;
     use crate::tests::test_encode_decode;
+    use crate::tests::test_encode_decode_with_context;
 
     impl<'a> Arbitrary<'a> for EncryptedHandshakeInitiation {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
@@ -249,8 +269,8 @@ mod tests {
         arbtest(test_encode_decode::<EncryptedTimestamp>);
         arbtest(test_encode_decode::<EncryptedNothing>);
         arbtest(test_encode_decode::<EncryptedPacketData>);
-        arbtest(test_encode_decode::<EncryptedHandshakeInitiation>);
-        arbtest(test_encode_decode::<EncryptedHandshakeResponse>);
-        arbtest(test_encode_decode::<Message>);
+        test_encode_decode_with_context::<EncryptedHandshakeInitiation>();
+        test_encode_decode_with_context::<EncryptedHandshakeResponse>();
+        test_encode_decode_with_context::<Message>();
     }
 }

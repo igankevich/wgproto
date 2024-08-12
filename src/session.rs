@@ -9,6 +9,7 @@ use zeroize::Zeroize;
 use crate::Cookie;
 use crate::Counter;
 use crate::Encode;
+use crate::EncodeWithContext;
 use crate::EncryptedHandshakeInitiation;
 use crate::EncryptedHandshakeResponse;
 use crate::EncryptedNothing;
@@ -39,7 +40,8 @@ pub struct Session {
     static_public: PublicKey,
     static_preshared: PresharedKey,
     other_static_public: Option<PublicKey>,
-    last_sent_cookie: Option<Cookie>,
+    // TODO
+    pub last_sent_cookie: Option<Cookie>,
     last_received_cookie: Option<Cookie>,
     sending_key: Key,
     receiving_key: Key,
@@ -126,18 +128,17 @@ impl Session {
             encrypted_timestamp,
         });
         let mut buffer = Vec::with_capacity(HANDSHAKE_INITIATION_LEN);
-        message.encode_to_vec(&mut buffer);
-        encode_macs(
-            &responder_static_public,
-            self.last_received_cookie.as_ref(),
-            &mut buffer,
-        )?;
+        let context = Context {
+            static_public: &responder_static_public,
+            cookie: self.last_received_cookie.as_ref(),
+            data: &[],
+        };
+        message.encode_with_context(&mut buffer, context);
         Ok(buffer)
     }
 
     pub fn on_handshake_response(
         &mut self,
-        data: &[u8],
         response: EncryptedHandshakeResponse,
     ) -> Result<(), Error> {
         self.hash = blake2s_add(self.hash, response.unencrypted_ephemeral);
@@ -165,11 +166,6 @@ impl Session {
             return Err(Error);
         }
         self.hash = blake2s_add(self.hash, decrypted_nothing.as_slice());
-        verify_message(
-            &data[..HANDSHAKE_RESPONSE_LEN],
-            &self.static_public,
-            self.last_received_cookie.as_ref(),
-        )?;
         self.receiver_index = Some(response.receiver_index);
         let (temp2, temp3) = self.derive_keys()?;
         self.sending_key = temp2;
@@ -181,7 +177,6 @@ impl Session {
         static_public: PublicKey,
         static_private: PrivateKey,
         static_preshared: PresharedKey,
-        data: &[u8],
         initiation: EncryptedHandshakeInitiation,
     ) -> Result<(Self, HandshakeInitiation, Vec<u8>), Error> {
         let ephemeral_private = PrivateKey::random();
@@ -204,7 +199,7 @@ impl Session {
             sending_key_counter: Default::default(),
             receiving_key_counter: Default::default(),
         };
-        let initiation = session.on_handshake_initiation(data, initiation)?;
+        let initiation = session.on_handshake_initiation(initiation)?;
         let response = session.handshake_response(&initiation)?;
         let (temp2, temp3) = session.derive_keys()?;
         session.receiving_key = temp2;
@@ -264,7 +259,6 @@ impl Session {
     /// `data` the whole message
     fn on_handshake_initiation(
         &mut self,
-        data: &[u8],
         initiation: EncryptedHandshakeInitiation,
     ) -> Result<HandshakeInitiation, Error> {
         self.chaining_key = blake2s(CONSTRUCTION.as_bytes());
@@ -296,11 +290,6 @@ impl Session {
         let decrypted_timestamp =
             aead_decrypt(&key, 0, &initiation.encrypted_timestamp, self.hash)?;
         self.hash = blake2s_add(self.hash, &initiation.encrypted_timestamp);
-        verify_message(
-            &data[..HANDSHAKE_INITIATION_LEN],
-            &self.static_public,
-            self.last_sent_cookie.as_ref(),
-        )?;
         self.other_static_public = Some(decrypted_static);
         Ok(HandshakeInitiation {
             sender_index: initiation.sender_index,
@@ -345,55 +334,58 @@ impl Session {
             encrypted_nothing,
         });
         let mut buffer = Vec::with_capacity(HANDSHAKE_RESPONSE_LEN);
-        message.encode_to_vec(&mut buffer);
-        encode_macs(
-            &initiation.static_public,
-            self.last_received_cookie.as_ref(),
-            &mut buffer,
-        )?;
+        let context = Context {
+            static_public: &initiation.static_public,
+            cookie: self.last_received_cookie.as_ref(),
+            data: &[],
+        };
+        message.encode_with_context(&mut buffer, context);
         Ok(buffer)
     }
 }
 
-fn encode_macs(
-    static_public: &PublicKey,
-    cookie: Option<&Cookie>,
-    buffer: &mut Vec<u8>,
-) -> Result<(), Error> {
-    let mac1 = keyed_blake2s(&blake2s_add(LABEL_MAC1, static_public), buffer.as_slice());
-    mac1.encode_to_vec(buffer);
-    let mac2 = match cookie {
-        Some(cookie) => keyed_blake2s(cookie.as_ref(), buffer.as_slice()),
-        None => Default::default(),
-    };
-    mac2.encode_to_vec(buffer);
-    Ok(())
+#[derive(Clone, Copy)]
+pub struct Context<'a> {
+    pub static_public: &'a PublicKey,
+    pub cookie: Option<&'a Cookie>,
+    pub data: &'a [u8],
 }
 
-fn verify_message(
-    data: &[u8],
-    static_public: &PublicKey,
-    cookie: Option<&Cookie>,
-) -> Result<(), Error> {
-    let mac2_offset = data.len() - MAC_LEN;
-    let mac1_offset = mac2_offset - MAC_LEN;
-    let other_mac1 = &data[mac1_offset..(mac1_offset + MAC_LEN)];
-    let other_mac2 = &data[mac2_offset..(mac2_offset + MAC_LEN)];
-    let mac1 = keyed_blake2s(
-        &blake2s_add(LABEL_MAC1, static_public),
-        &data[..mac1_offset],
-    );
-    if mac1 != other_mac1 {
-        return Err(Error);
+impl Context<'_> {
+    pub fn sign(&self, buffer: &mut Vec<u8>) {
+        let mac1 = keyed_blake2s(
+            &blake2s_add(LABEL_MAC1, self.static_public),
+            buffer.as_slice(),
+        );
+        mac1.encode_to_vec(buffer);
+        let mac2 = match self.cookie {
+            Some(cookie) => keyed_blake2s(cookie.as_ref(), buffer.as_slice()),
+            None => Default::default(),
+        };
+        mac2.encode_to_vec(buffer);
     }
-    let mac2 = match cookie {
-        Some(cookie) => keyed_blake2s(cookie.as_ref(), &data[..mac2_offset]),
-        None => Default::default(),
-    };
-    if mac2 != other_mac2 {
-        return Err(Error);
+
+    pub fn verify(&self) -> Result<(), Error> {
+        let mac2_offset = self.data.len() - MAC_LEN;
+        let mac1_offset = mac2_offset - MAC_LEN;
+        let other_mac1 = &self.data[mac1_offset..(mac1_offset + MAC_LEN)];
+        let other_mac2 = &self.data[mac2_offset..(mac2_offset + MAC_LEN)];
+        let mac1 = keyed_blake2s(
+            &blake2s_add(LABEL_MAC1, self.static_public),
+            &self.data[..mac1_offset],
+        );
+        if mac1 != other_mac1 {
+            return Err(Error);
+        }
+        let mac2 = match self.cookie {
+            Some(cookie) => keyed_blake2s(cookie.as_ref(), &self.data[..mac2_offset]),
+            None => Default::default(),
+        };
+        if mac2 != other_mac2 {
+            return Err(Error);
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn blake2s(slice: &[u8]) -> SecretData {
@@ -498,7 +490,7 @@ pub(crate) const MAC_LEN: usize = 16;
 mod tests {
 
     use super::*;
-    use crate::Decode;
+    use crate::DecodeWithContext;
     use crate::Message;
     use crate::MessageType;
 
@@ -506,15 +498,24 @@ mod tests {
     fn encode_decode_handshake_initiation_wg() {
         let bytes = VALID_HANDSHAKE_INITIATION;
         let responder_static_public: PublicKey = RESPONDER_STATIC_PUBLIC.into();
+        let context = Context {
+            static_public: &responder_static_public,
+            cookie: None,
+            data: &bytes,
+        };
         for n in 0..(bytes.len() - 1) {
-            assert!(Message::decode_from_slice(&bytes[..n]).is_err());
+            assert!(Message::decode_with_context(&bytes[..n], context).is_err());
         }
-        let (message, slice) = Message::decode_from_slice(bytes.as_slice()).unwrap();
+        let (message, slice) = Message::decode_with_context(bytes.as_slice(), context).unwrap();
         assert_eq!(MessageType::HandshakeInitiation, message.get_type());
         assert!(slice.is_empty());
         let mut buffer = Vec::new();
-        message.encode_to_vec(&mut buffer);
-        encode_macs(&responder_static_public, None, &mut buffer).unwrap();
+        let context = Context {
+            static_public: &responder_static_public,
+            cookie: None,
+            data: &[],
+        };
+        message.encode_with_context(&mut buffer, context);
         assert_eq!(bytes.as_slice(), buffer.as_slice());
     }
 
@@ -522,15 +523,24 @@ mod tests {
     fn encode_decode_handshake_response_wg() {
         let bytes = VALID_HANDSHAKE_RESPONSE;
         let initiator_static_public: PublicKey = INITIATOR_STATIC_PUBLIC.into();
+        let context = Context {
+            static_public: &initiator_static_public,
+            cookie: None,
+            data: &bytes,
+        };
         for n in 0..(bytes.len() - 1) {
-            assert!(Message::decode_from_slice(&bytes[..n]).is_err());
+            assert!(Message::decode_with_context(&bytes[..n], context).is_err());
         }
-        let (message, slice) = Message::decode_from_slice(bytes.as_slice()).unwrap();
+        let (message, slice) = Message::decode_with_context(bytes.as_slice(), context).unwrap();
         assert_eq!(MessageType::HandshakeResponse, message.get_type());
         assert!(slice.is_empty());
         let mut buffer = Vec::new();
-        message.encode_to_vec(&mut buffer);
-        encode_macs(&initiator_static_public, None, &mut buffer).unwrap();
+        let context = Context {
+            static_public: &initiator_static_public,
+            cookie: None,
+            data: &[],
+        };
+        message.encode_with_context(&mut buffer, context);
         assert_eq!(bytes.as_slice(), buffer.as_slice());
     }
 
@@ -541,13 +551,17 @@ mod tests {
         let responder_static_secret: PrivateKey = RESPONDER_STATIC_SECRET.into();
         let static_preshared: PresharedKey = [0_u8; PUBLIC_KEY_LEN].into();
         let bytes = VALID_HANDSHAKE_INITIATION;
-        let (message, _slice) = Message::decode_from_slice(bytes.as_slice())?;
+        let context = Context {
+            static_public: &responder_static_public,
+            cookie: None,
+            data: &bytes,
+        };
+        let (message, _slice) = Message::decode_with_context(bytes.as_slice(), context)?;
         let (_responder, initiation, _) = match message {
             Message::HandshakeInitiation(message) => Session::respond(
                 responder_static_public,
                 responder_static_secret,
                 static_preshared,
-                bytes.as_slice(),
                 message,
             )?,
             _ => return Err(Error),
@@ -569,7 +583,12 @@ mod tests {
             static_preshared.clone(),
             responder_static_public,
         )?;
-        let (message, slice) = Message::decode_from_slice(initiation_bytes.as_slice())?;
+        let context = Context {
+            static_public: &responder_static_public,
+            cookie: None,
+            data: &initiation_bytes,
+        };
+        let (message, slice) = Message::decode_with_context(initiation_bytes.as_slice(), context)?;
         assert_eq!(MessageType::HandshakeInitiation, message.get_type());
         assert!(slice.is_empty());
         let (mut responder, initiation, response_bytes) = match message {
@@ -577,26 +596,38 @@ mod tests {
                 responder_static_public,
                 responder_static_secret,
                 static_preshared,
-                initiation_bytes.as_slice(),
                 message,
             )?,
             _ => return Err(Error),
         };
         assert_eq!(initiator_static_public, initiation.static_public);
-        let (message, slice) = Message::decode_from_slice(response_bytes.as_slice())?;
+        let context = Context {
+            static_public: &initiator_static_public,
+            cookie: None,
+            data: &response_bytes,
+        };
+        let (message, slice) = Message::decode_with_context(response_bytes.as_slice(), context)?;
         assert_eq!(MessageType::HandshakeResponse, message.get_type());
         assert!(slice.is_empty());
         match message {
-            Message::HandshakeResponse(message) => {
-                initiator.on_handshake_response(response_bytes.as_slice(), message)?
-            }
+            Message::HandshakeResponse(message) => initiator.on_handshake_response(message)?,
             _ => return Err(Error),
         };
         // keep alive
         let message = initiator.send(&[])?;
         let mut buffer = Vec::new();
-        message.encode_to_vec(&mut buffer);
-        let (message, slice) = Message::decode_from_slice(buffer.as_slice())?;
+        let context = Context {
+            static_public: &initiator.static_public,
+            cookie: None,
+            data: &[],
+        };
+        message.encode_with_context(&mut buffer, context);
+        let context = Context {
+            static_public: &initiator.static_public,
+            cookie: None,
+            data: buffer.as_slice(),
+        };
+        let (message, slice) = Message::decode_with_context(buffer.as_slice(), context)?;
         assert_eq!(MessageType::PacketData, message.get_type());
         assert!(slice.is_empty());
         let packet_data = match message {
