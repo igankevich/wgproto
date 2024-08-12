@@ -1,13 +1,12 @@
-use tai64::Tai64N;
-use x25519_dalek::PublicKey;
-
 use crate::Counter;
 use crate::Decode;
 use crate::Encode;
 use crate::EncryptedBytes;
 use crate::Error;
 use crate::MessageType;
+use crate::PublicKey;
 use crate::SessionIndex;
+use crate::Timestamp;
 use crate::MAC_LEN;
 use crate::PUBLIC_KEY_LEN;
 
@@ -75,7 +74,7 @@ pub struct HandshakeInitiation {
     pub sender_index: SessionIndex,
     pub unencrypted_ephemeral: PublicKey,
     pub static_public: PublicKey,
-    pub timestamp: Tai64N,
+    pub timestamp: Timestamp,
 }
 
 pub struct EncryptedHandshakeInitiation {
@@ -172,7 +171,9 @@ impl Encode for EncryptedPacketData {
     fn encode_to_vec(&self, buffer: &mut Vec<u8>) {
         self.receiver_index.encode_to_vec(buffer);
         self.counter.encode_to_vec(buffer);
-        self.encrypted_encapsulated_packet.as_slice().encode_to_vec(buffer);
+        self.encrypted_encapsulated_packet
+            .as_slice()
+            .encode_to_vec(buffer);
     }
 }
 

@@ -1,6 +1,5 @@
-use x25519_dalek::PublicKey;
-
 use crate::Error;
+use crate::PublicKey;
 use crate::PUBLIC_KEY_LEN;
 
 pub trait Decode {

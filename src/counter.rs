@@ -7,6 +7,7 @@ use crate::Encode;
 use crate::Error;
 
 #[derive(PartialEq, Eq, PartialOrd, Hash, Clone, Copy)]
+#[repr(transparent)]
 pub struct Counter {
     number: u64,
 }

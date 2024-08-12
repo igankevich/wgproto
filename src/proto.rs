@@ -4,9 +4,6 @@ use blake2::Blake2sMac;
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::ChaCha20Poly1305;
 use hmac::SimpleHmac;
-use tai64::Tai64N;
-use x25519_dalek::PublicKey;
-use x25519_dalek::StaticSecret;
 use zeroize::Zeroize;
 
 use crate::Counter;
@@ -20,8 +17,11 @@ use crate::EncryptedTimestamp;
 use crate::Error;
 use crate::HandshakeInitiation;
 use crate::Message;
+use crate::PrivateKey;
+use crate::PublicKey;
 use crate::SecretData;
 use crate::SessionIndex;
+use crate::Timestamp;
 use crate::U8_32;
 
 //https://www.wireguard.com/protocol/
@@ -41,11 +41,11 @@ pub struct Session {
     receiver_index: Option<SessionIndex>,
     chaining_key: ChainingKey,
     hash: SessionHash,
-    ephemeral_private: StaticSecret,
+    ephemeral_private: PrivateKey,
     ephemeral_public: PublicKey,
-    static_private: StaticSecret,
+    static_private: PrivateKey,
     static_public: PublicKey,
-    static_preshared: StaticSecret,
+    static_preshared: PrivateKey,
     other_static_public: Option<PublicKey>,
     last_sent_cookie: Option<Cookie>,
     last_received_cookie: Option<Cookie>,
@@ -56,13 +56,17 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn sender_index(&self) -> SessionIndex {
+        self.sender_index
+    }
+
     pub fn initiate(
         static_public: PublicKey,
-        static_private: StaticSecret,
-        static_preshared: StaticSecret,
+        static_private: PrivateKey,
+        static_preshared: PrivateKey,
         responder_static_public: PublicKey,
     ) -> Result<(Self, Vec<u8>), Error> {
-        let ephemeral_private = StaticSecret::random();
+        let ephemeral_private = PrivateKey::random();
         let ephemeral_public: PublicKey = (&ephemeral_private).into();
         let mut session = Self {
             sender_index: Default::default(),
@@ -117,7 +121,7 @@ impl Session {
         )?;
         self.chaining_key = hmac_blake2s(&temp, [0x1])?;
         key = hmac_blake2s_add(&temp, &self.chaining_key, [0x2])?;
-        let timestamp = Tai64N::now();
+        let timestamp = Timestamp::now();
         let encrypted_timestamp: EncryptedTimestamp =
             aead_encrypt(&key, 0, timestamp.to_bytes(), self.hash)?
                 .as_slice()
@@ -183,12 +187,13 @@ impl Session {
 
     pub fn respond(
         static_public: PublicKey,
-        static_private: StaticSecret,
-        static_preshared: StaticSecret,
+        static_private: PrivateKey,
+        static_preshared: PrivateKey,
+        initiator_static_public: Option<&PublicKey>,
         data: &[u8],
         initiation: EncryptedHandshakeInitiation,
     ) -> Result<(Self, HandshakeInitiation, Vec<u8>), Error> {
-        let ephemeral_private = StaticSecret::random();
+        let ephemeral_private = PrivateKey::random();
         let ephemeral_public: PublicKey = (&ephemeral_private).into();
         let mut session = Self {
             sender_index: Default::default(),
@@ -208,7 +213,8 @@ impl Session {
             sending_key_counter: Default::default(),
             receiving_key_counter: Default::default(),
         };
-        let initiation = session.on_handshake_initiation(data, initiation)?;
+        let initiation =
+            session.on_handshake_initiation(data, initiation, initiator_static_public)?;
         let response = session.handshake_response(&initiation)?;
         let (temp2, temp3) = session.derive_keys()?;
         session.receiving_key = temp2;
@@ -261,6 +267,7 @@ impl Session {
             data,
             [],
         )?;
+        self.receiving_key_counter.increment();
         Ok(unencrypted_packet)
     }
 
@@ -269,6 +276,7 @@ impl Session {
         &mut self,
         data: &[u8],
         initiation: EncryptedHandshakeInitiation,
+        initiator_static_public: Option<&PublicKey>,
     ) -> Result<HandshakeInitiation, Error> {
         self.chaining_key = blake2s(CONSTRUCTION.as_bytes());
         self.hash = blake2s_add(
@@ -289,6 +297,12 @@ impl Session {
         let decrypted_static: [u8; PUBLIC_KEY_LEN] =
             decrypted_static.try_into().map_err(Error::map)?;
         let decrypted_static: PublicKey = decrypted_static.into();
+        // TODO delete?
+        if let Some(initiator_static_public) = initiator_static_public {
+            if &decrypted_static != initiator_static_public {
+                return Err(Error);
+            }
+        }
         self.hash = blake2s_add(self.hash, &initiation.encrypted_static);
         temp = hmac_blake2s(
             &self.chaining_key,
@@ -533,9 +547,10 @@ mod tests {
 
     #[test]
     fn respond_wg() {
+        let initiator_static_public: PublicKey = INITIATOR_STATIC_PUBLIC.into();
         let responder_static_public: PublicKey = RESPONDER_STATIC_PUBLIC.into();
-        let responder_static_secret: StaticSecret = RESPONDER_STATIC_SECRET.into();
-        let static_preshared: StaticSecret = [0_u8; PUBLIC_KEY_LEN].into();
+        let responder_static_secret: PrivateKey = RESPONDER_STATIC_SECRET.into();
+        let static_preshared: PrivateKey = [0_u8; PUBLIC_KEY_LEN].into();
         let bytes = VALID_HANDSHAKE_INITIATION;
         let (message, _slice) = Message::decode_from_slice(bytes.as_slice()).unwrap();
         match message {
@@ -543,6 +558,7 @@ mod tests {
                 responder_static_public,
                 responder_static_secret,
                 static_preshared,
+                Some(&initiator_static_public),
                 bytes.as_slice(),
                 message,
             )
@@ -553,11 +569,11 @@ mod tests {
 
     #[test]
     fn handshake() {
-        let initiator_static_secret = StaticSecret::random();
+        let initiator_static_secret = PrivateKey::random();
         let initiator_static_public: PublicKey = (&initiator_static_secret).into();
-        let responder_static_secret = StaticSecret::random();
+        let responder_static_secret = PrivateKey::random();
         let responder_static_public: PublicKey = (&responder_static_secret).into();
-        let static_preshared = StaticSecret::random();
+        let static_preshared = PrivateKey::random();
         let (mut initiator, initiation_bytes) = Session::initiate(
             initiator_static_public,
             initiator_static_secret,
@@ -573,6 +589,7 @@ mod tests {
                 responder_static_public,
                 responder_static_secret,
                 static_preshared,
+                Some(&initiator_static_public),
                 initiation_bytes.as_slice(),
                 message,
             )
@@ -596,9 +613,7 @@ mod tests {
         assert_eq!(MessageType::PacketData, message.get_type());
         assert!(slice.is_empty());
         let packet_data = match message {
-            Message::PacketData(message) => responder
-                .receive(&message)
-                .unwrap(),
+            Message::PacketData(message) => responder.receive(&message).unwrap(),
             _ => return assert!(false, "invalid message type"),
         };
         assert!(packet_data.is_empty());

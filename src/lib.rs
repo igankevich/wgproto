@@ -17,3 +17,7 @@ pub use self::message_type::*;
 pub use self::proto::*;
 pub(crate) use self::secret_hash::*;
 pub use self::session_index::*;
+
+pub use x25519_dalek::PublicKey;
+pub use x25519_dalek::StaticSecret as PrivateKey;
+pub use tai64::Tai64N as Timestamp;

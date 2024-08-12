@@ -10,6 +10,7 @@ use crate::Encode;
 use crate::Error;
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
+#[repr(transparent)]
 pub struct SessionIndex {
     number: u32,
 }

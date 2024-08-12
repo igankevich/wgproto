@@ -4,7 +4,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub(crate) type U8_32 = [u8; SECRET_DATA_LEN];
 
-#[derive(Zeroize, ZeroizeOnDrop)]
+#[derive(Default, Zeroize, ZeroizeOnDrop)]
+#[repr(transparent)]
 pub(crate) struct SecretData {
     data: U8_32,
 }
@@ -14,14 +15,6 @@ impl Deref for SecretData {
 
     fn deref(&self) -> &Self::Target {
         &self.data
-    }
-}
-
-impl Default for SecretData {
-    fn default() -> Self {
-        Self {
-            data: Default::default(),
-        }
     }
 }
 
