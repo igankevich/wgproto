@@ -185,10 +185,27 @@ pub type EncryptedStatic = EncryptedBytes<ENCRYPTED_STATIC_LEN>;
 pub type EncryptedTimestamp = EncryptedBytes<ENCRYPTED_TAI_LEN>;
 pub type EncryptedNothing = EncryptedBytes<ENCRYPTED_NOTHING_LEN>;
 
+pub struct Cookie {
+    data: [u8; COOKIE_LEN],
+}
+
+impl AsRef<[u8]> for Cookie {
+    fn as_ref(&self) -> &[u8] {
+        self.data.as_slice()
+    }
+}
+
+impl AsRef<[u8; COOKIE_LEN]> for Cookie {
+    fn as_ref(&self) -> &[u8; COOKIE_LEN] {
+        &self.data
+    }
+}
+
 const TAI64N_LEN: usize = 12;
 const ENCRYPTED_STATIC_LEN: usize = aead_len(PUBLIC_KEY_LEN);
 const ENCRYPTED_TAI_LEN: usize = aead_len(TAI64N_LEN);
 const ENCRYPTED_NOTHING_LEN: usize = aead_len(0);
+const COOKIE_LEN: usize = aead_len(16);
 
 const fn aead_len(n: usize) -> usize {
     n + 16

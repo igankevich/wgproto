@@ -24,6 +24,12 @@ impl AsRef<[u8]> for SecretData {
     }
 }
 
+impl AsRef<U8_32> for SecretData {
+    fn as_ref(&self) -> &U8_32 {
+        &self.data
+    }
+}
+
 impl From<U8_32> for SecretData {
     fn from(data: U8_32) -> Self {
         Self { data }

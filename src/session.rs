@@ -6,6 +6,7 @@ use chacha20poly1305::ChaCha20Poly1305;
 use hmac::SimpleHmac;
 use zeroize::Zeroize;
 
+use crate::Cookie;
 use crate::Counter;
 use crate::Encode;
 use crate::EncryptedHandshakeInitiation;
@@ -26,16 +27,6 @@ use crate::Timestamp;
 use crate::U8_32;
 
 //https://www.wireguard.com/protocol/
-
-pub struct Cookie {
-    data: [u8; COOKIE_LEN],
-}
-
-impl AsRef<[u8]> for Cookie {
-    fn as_ref(&self) -> &[u8] {
-        self.data.as_slice()
-    }
-}
 
 pub struct Session {
     sender_index: SessionIndex,
@@ -102,15 +93,15 @@ impl Session {
             responder_static_public,
         );
         self.hash = blake2s_add(self.hash, self.ephemeral_public);
-        let mut temp = hmac_blake2s(&self.chaining_key, self.ephemeral_public)?;
-        self.chaining_key = hmac_blake2s(temp, [0x1])?;
+        let mut temp = hmac_blake2s(&self.chaining_key, self.ephemeral_public);
+        self.chaining_key = hmac_blake2s(temp, [0x1]);
         temp = hmac_blake2s(
             &self.chaining_key,
             self.ephemeral_private
                 .diffie_hellman(&responder_static_public),
-        )?;
-        self.chaining_key = hmac_blake2s(&temp, [0x1])?;
-        let mut key = hmac_blake2s_add(&temp, &self.chaining_key, [0x2])?;
+        );
+        self.chaining_key = hmac_blake2s(&temp, [0x1]);
+        let mut key = hmac_blake2s_add(&temp, &self.chaining_key, [0x2]);
         let encrypted_static: EncryptedStatic =
             aead_encrypt(&key, 0, self.static_public, self.hash)?
                 .as_slice()
@@ -119,9 +110,9 @@ impl Session {
         temp = hmac_blake2s(
             &self.chaining_key,
             self.static_private.diffie_hellman(&responder_static_public),
-        )?;
-        self.chaining_key = hmac_blake2s(&temp, [0x1])?;
-        key = hmac_blake2s_add(&temp, &self.chaining_key, [0x2])?;
+        );
+        self.chaining_key = hmac_blake2s(&temp, [0x1]);
+        key = hmac_blake2s_add(&temp, &self.chaining_key, [0x2]);
         let timestamp = Timestamp::now();
         let encrypted_timestamp: EncryptedTimestamp =
             aead_encrypt(&key, 0, timestamp.to_bytes(), self.hash)?
@@ -150,24 +141,24 @@ impl Session {
         response: EncryptedHandshakeResponse,
     ) -> Result<(), Error> {
         self.hash = blake2s_add(self.hash, response.unencrypted_ephemeral);
-        let mut temp = hmac_blake2s(&self.chaining_key, response.unencrypted_ephemeral)?;
-        self.chaining_key = hmac_blake2s(temp, [0x1])?;
+        let mut temp = hmac_blake2s(&self.chaining_key, response.unencrypted_ephemeral);
+        self.chaining_key = hmac_blake2s(temp, [0x1]);
         temp = hmac_blake2s(
             &self.chaining_key,
             self.ephemeral_private
                 .diffie_hellman(&response.unencrypted_ephemeral),
-        )?;
-        self.chaining_key = hmac_blake2s(temp, [0x1])?;
+        );
+        self.chaining_key = hmac_blake2s(temp, [0x1]);
         temp = hmac_blake2s(
             &self.chaining_key,
             self.static_private
                 .diffie_hellman(&response.unencrypted_ephemeral),
-        )?;
-        self.chaining_key = hmac_blake2s(&temp, [0x1])?;
-        temp = hmac_blake2s(&self.chaining_key, &self.static_preshared)?;
-        self.chaining_key = hmac_blake2s(&temp, [0x1])?;
-        let temp2 = hmac_blake2s_add(&temp, &self.chaining_key, [0x2])?;
-        let key = hmac_blake2s_add(temp, &temp2, [0x3])?;
+        );
+        self.chaining_key = hmac_blake2s(&temp, [0x1]);
+        temp = hmac_blake2s(&self.chaining_key, &self.static_preshared);
+        self.chaining_key = hmac_blake2s(&temp, [0x1]);
+        let temp2 = hmac_blake2s_add(&temp, &self.chaining_key, [0x2]);
+        let key = hmac_blake2s_add(temp, &temp2, [0x3]);
         self.hash = blake2s_add(self.hash, &temp2);
         let decrypted_nothing = aead_decrypt(&key, 0, &response.encrypted_nothing, self.hash)?;
         if !decrypted_nothing.is_empty() {
@@ -222,9 +213,9 @@ impl Session {
     }
 
     fn derive_keys(&mut self) -> Result<(Key, Key), Error> {
-        let temp1 = hmac_blake2s(&self.chaining_key, [])?;
-        let temp2 = hmac_blake2s(&temp1, [0x1])?;
-        let temp3 = hmac_blake2s_add(&temp1, &temp2, [0x1])?;
+        let temp1 = hmac_blake2s(&self.chaining_key, []);
+        let temp2 = hmac_blake2s(&temp1, [0x1]);
+        let temp3 = hmac_blake2s_add(&temp1, &temp2, [0x1]);
         self.chaining_key.zeroize();
         self.hash.zeroize();
         self.ephemeral_public.zeroize();
@@ -282,15 +273,15 @@ impl Session {
             self.static_public,
         );
         self.hash = blake2s_add(self.hash, initiation.unencrypted_ephemeral);
-        let mut temp = hmac_blake2s(&self.chaining_key, initiation.unencrypted_ephemeral)?;
-        self.chaining_key = hmac_blake2s(temp, [0x1])?;
+        let mut temp = hmac_blake2s(&self.chaining_key, initiation.unencrypted_ephemeral);
+        self.chaining_key = hmac_blake2s(temp, [0x1]);
         temp = hmac_blake2s(
             &self.chaining_key,
             self.static_private
                 .diffie_hellman(&initiation.unencrypted_ephemeral),
-        )?;
-        self.chaining_key = hmac_blake2s(&temp, [0x1])?;
-        let mut key = hmac_blake2s_add(&temp, &self.chaining_key, [0x2])?;
+        );
+        self.chaining_key = hmac_blake2s(&temp, [0x1]);
+        let mut key = hmac_blake2s_add(&temp, &self.chaining_key, [0x2]);
         let decrypted_static = aead_decrypt(&key, 0, &initiation.encrypted_static, self.hash)?;
         let decrypted_static: [u8; PUBLIC_KEY_LEN] =
             decrypted_static.try_into().map_err(Error::map)?;
@@ -299,9 +290,9 @@ impl Session {
         temp = hmac_blake2s(
             &self.chaining_key,
             self.static_private.diffie_hellman(&decrypted_static),
-        )?;
-        self.chaining_key = hmac_blake2s(&temp, [0x1])?;
-        key = hmac_blake2s_add(&temp, &self.chaining_key, [0x2])?;
+        );
+        self.chaining_key = hmac_blake2s(&temp, [0x1]);
+        key = hmac_blake2s_add(&temp, &self.chaining_key, [0x2]);
         let decrypted_timestamp =
             aead_decrypt(&key, 0, &initiation.encrypted_timestamp, self.hash)?;
         self.hash = blake2s_add(self.hash, &initiation.encrypted_timestamp);
@@ -325,24 +316,24 @@ impl Session {
     fn handshake_response(&mut self, initiation: &HandshakeInitiation) -> Result<Vec<u8>, Error> {
         self.receiver_index = Some(initiation.sender_index);
         self.hash = blake2s_add(self.hash, self.ephemeral_public);
-        let mut temp = hmac_blake2s(&self.chaining_key, self.ephemeral_public)?;
-        self.chaining_key = hmac_blake2s(temp, [0x1])?;
+        let mut temp = hmac_blake2s(&self.chaining_key, self.ephemeral_public);
+        self.chaining_key = hmac_blake2s(temp, [0x1]);
         temp = hmac_blake2s(
             &self.chaining_key,
             self.ephemeral_private
                 .diffie_hellman(&initiation.unencrypted_ephemeral),
-        )?;
-        self.chaining_key = hmac_blake2s(temp, [0x1])?;
+        );
+        self.chaining_key = hmac_blake2s(temp, [0x1]);
         temp = hmac_blake2s(
             &self.chaining_key,
             self.ephemeral_private
                 .diffie_hellman(&initiation.static_public),
-        )?;
-        self.chaining_key = hmac_blake2s(temp, [0x1])?;
-        temp = hmac_blake2s(&self.chaining_key, &self.static_preshared)?;
-        self.chaining_key = hmac_blake2s(&temp, [0x1])?;
-        let temp2 = hmac_blake2s_add(&temp, &self.chaining_key, [0x2])?;
-        let key = hmac_blake2s_add(&temp, &temp2, [0x3])?;
+        );
+        self.chaining_key = hmac_blake2s(temp, [0x1]);
+        temp = hmac_blake2s(&self.chaining_key, &self.static_preshared);
+        self.chaining_key = hmac_blake2s(&temp, [0x1]);
+        let temp2 = hmac_blake2s_add(&temp, &self.chaining_key, [0x2]);
+        let key = hmac_blake2s_add(&temp, &temp2, [0x3]);
         self.hash = blake2s_add(self.hash, temp2);
         let encrypted_nothing = aead_encrypt(&key, 0, [], self.hash)?;
         let encrypted_nothing: EncryptedNothing = encrypted_nothing.as_slice().try_into()?;
@@ -369,10 +360,10 @@ fn encode_macs(
     cookie: Option<&Cookie>,
     buffer: &mut Vec<u8>,
 ) -> Result<(), Error> {
-    let mac1 = keyed_blake2s(blake2s_add(LABEL_MAC1, static_public), buffer.as_slice())?;
+    let mac1 = keyed_blake2s(&blake2s_add(LABEL_MAC1, static_public), buffer.as_slice());
     mac1.encode_to_vec(buffer);
     let mac2 = match cookie {
-        Some(cookie) => keyed_blake2s(cookie, buffer.as_slice())?,
+        Some(cookie) => keyed_blake2s(cookie.as_ref(), buffer.as_slice()),
         None => Default::default(),
     };
     mac2.encode_to_vec(buffer);
@@ -388,12 +379,15 @@ fn verify_message(
     let mac1_offset = mac2_offset - MAC_LEN;
     let other_mac1 = &data[mac1_offset..(mac1_offset + MAC_LEN)];
     let other_mac2 = &data[mac2_offset..(mac2_offset + MAC_LEN)];
-    let mac1 = keyed_blake2s(blake2s_add(LABEL_MAC1, static_public), &data[..mac1_offset])?;
+    let mac1 = keyed_blake2s(
+        &blake2s_add(LABEL_MAC1, static_public),
+        &data[..mac1_offset],
+    );
     if mac1 != other_mac1 {
         return Err(Error);
     }
     let mac2 = match cookie {
-        Some(cookie) => keyed_blake2s(cookie, &data[..mac2_offset])?,
+        Some(cookie) => keyed_blake2s(cookie.as_ref(), &data[..mac2_offset]),
         None => Default::default(),
     };
     if mac2 != other_mac2 {
@@ -418,32 +412,36 @@ fn blake2s_add(slice1: impl AsRef<[u8]>, slice2: impl AsRef<[u8]>) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn hmac_blake2s(key: impl AsRef<[u8]>, input: impl AsRef<[u8]>) -> Result<SecretData, Error> {
+#[allow(clippy::unwrap_used)]
+fn hmac_blake2s(key: impl AsRef<[u8]>, input: impl AsRef<[u8]>) -> SecretData {
     use hmac::Mac;
-    let mut hasher = HmacBlake2s::new_from_slice(key.as_ref()).map_err(Error::map)?;
+    // hmac::SimpleHmac works with any key size
+    let mut hasher = HmacBlake2s::new_from_slice(key.as_ref()).unwrap();
     hasher.update(input.as_ref());
     let digest: U8_32 = hasher.finalize_fixed().into();
-    Ok(digest.into())
+    digest.into()
 }
 
+#[allow(clippy::unwrap_used)]
 fn hmac_blake2s_add(
     key: impl AsRef<[u8]>,
     input1: impl AsRef<[u8]>,
     input2: impl AsRef<[u8]>,
-) -> Result<SecretData, Error> {
+) -> SecretData {
     use hmac::Mac;
-    let mut hasher = HmacBlake2s::new_from_slice(key.as_ref()).map_err(Error::map)?;
+    // hmac::SimpleHmac works with any key size
+    let mut hasher = HmacBlake2s::new_from_slice(key.as_ref()).unwrap();
     hasher.update(input1.as_ref());
     hasher.update(input2.as_ref());
     let digest: U8_32 = hasher.finalize_fixed().into();
-    Ok(digest.into())
+    digest.into()
 }
 
-fn keyed_blake2s(key: impl AsRef<[u8]>, input: impl AsRef<[u8]>) -> Result<[u8; 16], Error> {
+fn keyed_blake2s(key: &[u8; 32], input: impl AsRef<[u8]>) -> [u8; 16] {
     use blake2::digest::Mac;
-    let mut hasher = Blake2sMac::new_from_slice(key.as_ref()).map_err(Error::map)?;
+    let mut hasher = Blake2sMac::new(key.into());
     hasher.update(input.as_ref());
-    Ok(hasher.finalize_fixed().into())
+    hasher.finalize_fixed().into()
 }
 
 fn aead_encrypt(
@@ -489,7 +487,6 @@ const HASH_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 const HANDSHAKE_INITIATION_LEN: usize = 148;
 const HANDSHAKE_RESPONSE_LEN: usize = 92;
-const COOKIE_LEN: usize = 16;
 const CONSTRUCTION: &str = "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s";
 const IDENTIFIER: &str = "WireGuard v1 zx2c4 Jason@zx2c4.com";
 const LABEL_MAC1: &str = "mac1----";
