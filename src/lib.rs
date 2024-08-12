@@ -8,6 +8,11 @@ mod proto;
 mod secret_hash;
 mod session_index;
 
+pub use tai64::Tai64N as Timestamp;
+pub use x25519_dalek::PublicKey;
+pub use x25519_dalek::StaticSecret as PrivateKey;
+pub use x25519_dalek::StaticSecret as PresharedKey;
+
 pub use self::counter::*;
 pub use self::encode_decode::*;
 pub use self::encrypted_bytes::*;
@@ -17,7 +22,3 @@ pub use self::message_type::*;
 pub use self::proto::*;
 pub(crate) use self::secret_hash::*;
 pub use self::session_index::*;
-
-pub use x25519_dalek::PublicKey;
-pub use x25519_dalek::StaticSecret as PrivateKey;
-pub use tai64::Tai64N as Timestamp;

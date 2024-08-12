@@ -17,6 +17,7 @@ use crate::EncryptedTimestamp;
 use crate::Error;
 use crate::HandshakeInitiation;
 use crate::Message;
+use crate::PresharedKey;
 use crate::PrivateKey;
 use crate::PublicKey;
 use crate::SecretData;
@@ -45,7 +46,7 @@ pub struct Session {
     ephemeral_public: PublicKey,
     static_private: PrivateKey,
     static_public: PublicKey,
-    static_preshared: PrivateKey,
+    static_preshared: PresharedKey,
     other_static_public: Option<PublicKey>,
     last_sent_cookie: Option<Cookie>,
     last_received_cookie: Option<Cookie>,
@@ -63,7 +64,7 @@ impl Session {
     pub fn initiate(
         static_public: PublicKey,
         static_private: PrivateKey,
-        static_preshared: PrivateKey,
+        static_preshared: PresharedKey,
         responder_static_public: PublicKey,
     ) -> Result<(Self, Vec<u8>), Error> {
         let ephemeral_private = PrivateKey::random();
@@ -188,7 +189,7 @@ impl Session {
     pub fn respond(
         static_public: PublicKey,
         static_private: PrivateKey,
-        static_preshared: PrivateKey,
+        static_preshared: PresharedKey,
         initiator_static_public: Option<&PublicKey>,
         data: &[u8],
         initiation: EncryptedHandshakeInitiation,
@@ -550,7 +551,7 @@ mod tests {
         let initiator_static_public: PublicKey = INITIATOR_STATIC_PUBLIC.into();
         let responder_static_public: PublicKey = RESPONDER_STATIC_PUBLIC.into();
         let responder_static_secret: PrivateKey = RESPONDER_STATIC_SECRET.into();
-        let static_preshared: PrivateKey = [0_u8; PUBLIC_KEY_LEN].into();
+        let static_preshared: PresharedKey = [0_u8; PUBLIC_KEY_LEN].into();
         let bytes = VALID_HANDSHAKE_INITIATION;
         let (message, _slice) = Message::decode_from_slice(bytes.as_slice()).unwrap();
         match message {
@@ -573,7 +574,7 @@ mod tests {
         let initiator_static_public: PublicKey = (&initiator_static_secret).into();
         let responder_static_secret = PrivateKey::random();
         let responder_static_public: PublicKey = (&responder_static_secret).into();
-        let static_preshared = PrivateKey::random();
+        let static_preshared = PresharedKey::random();
         let (mut initiator, initiation_bytes) = Session::initiate(
             initiator_static_public,
             initiator_static_secret,
