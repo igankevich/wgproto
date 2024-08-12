@@ -7,6 +7,7 @@ use crate::Encode;
 use crate::Error;
 
 #[derive(PartialEq, Eq, PartialOrd, Hash, Clone, Copy)]
+#[cfg_attr(test, derive(arbitrary::Arbitrary))]
 #[repr(transparent)]
 pub struct Counter {
     number: u64,
@@ -55,5 +56,19 @@ impl Display for Counter {
 impl Debug for Counter {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         Debug::fmt(&self.number, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use arbtest::arbtest;
+
+    use super::*;
+    use crate::tests::test_encode_decode;
+
+    #[test]
+    fn encode_decode() {
+        arbtest(test_encode_decode::<Counter>);
     }
 }

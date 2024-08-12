@@ -4,9 +4,11 @@ mod encrypted_bytes;
 mod error;
 mod message;
 mod message_type;
-mod secret_hash;
+mod secret_data;
 mod session;
 mod session_index;
+#[cfg(test)]
+mod tests;
 
 pub use tai64::Tai64N as Timestamp;
 pub use x25519_dalek::PublicKey;
@@ -19,6 +21,6 @@ pub use self::encrypted_bytes::*;
 pub use self::error::*;
 pub use self::message::*;
 pub use self::message_type::*;
-pub(crate) use self::secret_hash::*;
+pub(crate) use self::secret_data::*;
 pub use self::session::*;
 pub use self::session_index::*;

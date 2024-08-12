@@ -9,7 +9,8 @@ use crate::Decode;
 use crate::Encode;
 use crate::Error;
 
-#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+#[cfg_attr(test, derive(arbitrary::Arbitrary))]
 #[repr(transparent)]
 pub struct SessionIndex {
     number: u32,
@@ -52,5 +53,19 @@ impl Display for SessionIndex {
 impl Debug for SessionIndex {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         Debug::fmt(&self.number, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use arbtest::arbtest;
+
+    use super::*;
+    use crate::tests::test_encode_decode;
+
+    #[test]
+    fn encode_decode() {
+        arbtest(test_encode_decode::<SessionIndex>);
     }
 }

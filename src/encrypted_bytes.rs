@@ -2,6 +2,7 @@ use crate::Decode;
 use crate::Encode;
 use crate::Error;
 
+#[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
 #[repr(transparent)]
 pub struct EncryptedBytes<const N: usize> {
     data: [u8; N],
