@@ -10,6 +10,7 @@ use crate::Timestamp;
 use crate::MAC_LEN;
 use crate::PUBLIC_KEY_LEN;
 
+#[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
 pub enum Message {
     HandshakeInitiation(EncryptedHandshakeInitiation),
     HandshakeResponse(EncryptedHandshakeResponse),
@@ -77,6 +78,7 @@ pub struct HandshakeInitiation {
     pub timestamp: Timestamp,
 }
 
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub struct EncryptedHandshakeInitiation {
     pub sender_index: SessionIndex,
     pub unencrypted_ephemeral: PublicKey,
@@ -111,6 +113,7 @@ impl Encode for EncryptedHandshakeInitiation {
     }
 }
 
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub struct EncryptedHandshakeResponse {
     pub sender_index: SessionIndex,
     pub receiver_index: SessionIndex,
@@ -145,6 +148,7 @@ impl Encode for EncryptedHandshakeResponse {
     }
 }
 
+#[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
 pub struct EncryptedPacketData {
     pub receiver_index: SessionIndex,
     pub counter: Counter,
@@ -188,4 +192,48 @@ const ENCRYPTED_NOTHING_LEN: usize = aead_len(0);
 
 const fn aead_len(n: usize) -> usize {
     n + 16
+}
+
+#[cfg(test)]
+mod tests {
+
+    use arbitrary::Arbitrary;
+    use arbitrary::Unstructured;
+    use arbtest::arbtest;
+
+    use super::*;
+    use crate::tests::test_encode_decode;
+
+    impl<'a> Arbitrary<'a> for EncryptedHandshakeInitiation {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            Ok(Self {
+                sender_index: u.arbitrary()?,
+                unencrypted_ephemeral: u.arbitrary::<[u8; PUBLIC_KEY_LEN]>()?.into(),
+                encrypted_static: u.arbitrary()?,
+                encrypted_timestamp: u.arbitrary()?,
+            })
+        }
+    }
+
+    impl<'a> Arbitrary<'a> for EncryptedHandshakeResponse {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            Ok(Self {
+                sender_index: u.arbitrary()?,
+                receiver_index: u.arbitrary()?,
+                unencrypted_ephemeral: u.arbitrary::<[u8; PUBLIC_KEY_LEN]>()?.into(),
+                encrypted_nothing: u.arbitrary()?,
+            })
+        }
+    }
+
+    #[test]
+    fn encode_decode() {
+        arbtest(test_encode_decode::<EncryptedStatic>);
+        arbtest(test_encode_decode::<EncryptedTimestamp>);
+        arbtest(test_encode_decode::<EncryptedNothing>);
+        arbtest(test_encode_decode::<EncryptedPacketData>);
+        arbtest(test_encode_decode::<EncryptedHandshakeInitiation>);
+        arbtest(test_encode_decode::<EncryptedHandshakeResponse>);
+        arbtest(test_encode_decode::<Message>);
+    }
 }

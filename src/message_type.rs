@@ -3,6 +3,7 @@ use crate::Encode;
 use crate::Error;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+#[cfg_attr(test, derive(arbitrary::Arbitrary))]
 #[repr(u8)]
 pub enum MessageType {
     HandshakeInitiation = 1,
@@ -34,5 +35,19 @@ impl TryFrom<u8> for MessageType {
             4 => Ok(Self::PacketData),
             _ => Err(Error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use arbtest::arbtest;
+
+    use super::*;
+    use crate::tests::test_encode_decode;
+
+    #[test]
+    fn encode_decode() {
+        arbtest(test_encode_decode::<MessageType>);
     }
 }
