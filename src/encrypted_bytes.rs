@@ -9,14 +9,14 @@ pub struct EncryptedBytes<const N: usize> {
 }
 
 impl<const N: usize> Decode for EncryptedBytes<N> {
-    fn decode_from_slice(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (data, slice): ([u8; N], _) = Decode::decode_from_slice(slice)?;
+    fn decode(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
+        let (data, slice): ([u8; N], _) = Decode::decode(slice)?;
         Ok((data.into(), slice))
     }
 }
 
 impl<const N: usize> Encode for EncryptedBytes<N> {
-    fn encode_to_vec(&self, buffer: &mut Vec<u8>) {
+    fn encode(&self, buffer: &mut Vec<u8>) {
         buffer.extend_from_slice(self.data.as_slice());
     }
 }

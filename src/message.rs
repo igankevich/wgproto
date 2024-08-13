@@ -35,7 +35,7 @@ impl DecodeWithContext<Context<'_>> for Message {
         slice: &'a [u8],
         context: Context,
     ) -> Result<(Self, &'a [u8]), Error> {
-        let (message_type, slice) = MessageType::decode_from_slice(slice)?;
+        let (message_type, slice) = MessageType::decode(slice)?;
         let (message, slice) = match message_type {
             MessageType::HandshakeInitiation => {
                 let (message, slice) =
@@ -48,7 +48,7 @@ impl DecodeWithContext<Context<'_>> for Message {
                 (Message::HandshakeResponse(message), slice)
             }
             MessageType::PacketData => {
-                let (message, slice) = EncryptedPacketData::decode_from_slice(slice)?;
+                let (message, slice) = EncryptedPacketData::decode(slice)?;
                 (Message::PacketData(message), slice)
             }
         };
@@ -60,16 +60,16 @@ impl EncodeWithContext<Context<'_>> for Message {
     fn encode_with_context(&self, buffer: &mut Vec<u8>, context: Context) {
         match self {
             Message::HandshakeInitiation(message) => {
-                MessageType::HandshakeInitiation.encode_to_vec(buffer);
+                MessageType::HandshakeInitiation.encode(buffer);
                 message.encode_with_context(buffer, context);
             }
             Message::HandshakeResponse(message) => {
-                MessageType::HandshakeResponse.encode_to_vec(buffer);
+                MessageType::HandshakeResponse.encode(buffer);
                 message.encode_with_context(buffer, context);
             }
             Message::PacketData(message) => {
-                MessageType::PacketData.encode_to_vec(buffer);
-                message.encode_to_vec(buffer);
+                MessageType::PacketData.encode(buffer);
+                message.encode(buffer);
             }
         }
     }
@@ -95,10 +95,10 @@ impl DecodeWithContext<Context<'_>> for EncryptedHandshakeInitiation {
         slice: &'a [u8],
         context: Context,
     ) -> Result<(Self, &'a [u8]), Error> {
-        let (sender_index, slice) = SessionIndex::decode_from_slice(slice)?;
-        let (unencrypted_ephemeral, slice) = PublicKey::decode_from_slice(slice)?;
-        let (encrypted_static, slice) = EncryptedStatic::decode_from_slice(slice)?;
-        let (encrypted_timestamp, slice) = EncryptedTimestamp::decode_from_slice(slice)?;
+        let (sender_index, slice) = SessionIndex::decode(slice)?;
+        let (unencrypted_ephemeral, slice) = PublicKey::decode(slice)?;
+        let (encrypted_static, slice) = EncryptedStatic::decode(slice)?;
+        let (encrypted_timestamp, slice) = EncryptedTimestamp::decode(slice)?;
         // skip macs
         let slice = slice.get((MAC_LEN + MAC_LEN)..).ok_or(Error)?;
         context.verify()?;
@@ -116,10 +116,10 @@ impl DecodeWithContext<Context<'_>> for EncryptedHandshakeInitiation {
 
 impl EncodeWithContext<Context<'_>> for EncryptedHandshakeInitiation {
     fn encode_with_context(&self, buffer: &mut Vec<u8>, context: Context<'_>) {
-        self.sender_index.encode_to_vec(buffer);
-        self.unencrypted_ephemeral.encode_to_vec(buffer);
-        self.encrypted_static.encode_to_vec(buffer);
-        self.encrypted_timestamp.encode_to_vec(buffer);
+        self.sender_index.encode(buffer);
+        self.unencrypted_ephemeral.encode(buffer);
+        self.encrypted_static.encode(buffer);
+        self.encrypted_timestamp.encode(buffer);
         context.sign(buffer);
     }
 }
@@ -137,10 +137,10 @@ impl DecodeWithContext<Context<'_>> for EncryptedHandshakeResponse {
         slice: &'a [u8],
         context: Context,
     ) -> Result<(Self, &'a [u8]), Error> {
-        let (sender_index, slice) = SessionIndex::decode_from_slice(slice)?;
-        let (receiver_index, slice) = SessionIndex::decode_from_slice(slice)?;
-        let (unencrypted_ephemeral, slice) = PublicKey::decode_from_slice(slice)?;
-        let (encrypted_nothing, slice) = EncryptedNothing::decode_from_slice(slice)?;
+        let (sender_index, slice) = SessionIndex::decode(slice)?;
+        let (receiver_index, slice) = SessionIndex::decode(slice)?;
+        let (unencrypted_ephemeral, slice) = PublicKey::decode(slice)?;
+        let (encrypted_nothing, slice) = EncryptedNothing::decode(slice)?;
         // skip macs
         let slice = slice.get((MAC_LEN + MAC_LEN)..).ok_or(Error)?;
         context.verify()?;
@@ -158,10 +158,10 @@ impl DecodeWithContext<Context<'_>> for EncryptedHandshakeResponse {
 
 impl EncodeWithContext<Context<'_>> for EncryptedHandshakeResponse {
     fn encode_with_context(&self, buffer: &mut Vec<u8>, context: Context) {
-        self.sender_index.encode_to_vec(buffer);
-        self.receiver_index.encode_to_vec(buffer);
-        self.unencrypted_ephemeral.encode_to_vec(buffer);
-        self.encrypted_nothing.encode_to_vec(buffer);
+        self.sender_index.encode(buffer);
+        self.receiver_index.encode(buffer);
+        self.unencrypted_ephemeral.encode(buffer);
+        self.encrypted_nothing.encode(buffer);
         context.sign(buffer);
     }
 }
@@ -174,10 +174,10 @@ pub struct EncryptedPacketData {
 }
 
 impl Decode for EncryptedPacketData {
-    fn decode_from_slice(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (receiver_index, slice) = SessionIndex::decode_from_slice(slice)?;
-        let (counter, slice) = Counter::decode_from_slice(slice)?;
-        let (encrypted_encapsulated_packet, slice) = <Vec<u8>>::decode_from_slice(slice)?;
+    fn decode(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
+        let (receiver_index, slice) = SessionIndex::decode(slice)?;
+        let (counter, slice) = Counter::decode(slice)?;
+        let (encrypted_encapsulated_packet, slice) = <Vec<u8>>::decode(slice)?;
         Ok((
             Self {
                 receiver_index,
@@ -190,12 +190,10 @@ impl Decode for EncryptedPacketData {
 }
 
 impl Encode for EncryptedPacketData {
-    fn encode_to_vec(&self, buffer: &mut Vec<u8>) {
-        self.receiver_index.encode_to_vec(buffer);
-        self.counter.encode_to_vec(buffer);
-        self.encrypted_encapsulated_packet
-            .as_slice()
-            .encode_to_vec(buffer);
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        self.receiver_index.encode(buffer);
+        self.counter.encode(buffer);
+        self.encrypted_encapsulated_packet.as_slice().encode(buffer);
     }
 }
 
@@ -238,8 +236,8 @@ mod tests {
     use arbtest::arbtest;
 
     use super::*;
-    use crate::tests::test_encode_decode;
-    use crate::tests::test_encode_decode_with_context;
+    use crate::tests::encode_decode_symmetry;
+    use crate::tests::encode_decode_symmetry_with_context;
 
     impl<'a> Arbitrary<'a> for EncryptedHandshakeInitiation {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
@@ -265,12 +263,12 @@ mod tests {
 
     #[test]
     fn encode_decode() {
-        arbtest(test_encode_decode::<EncryptedStatic>);
-        arbtest(test_encode_decode::<EncryptedTimestamp>);
-        arbtest(test_encode_decode::<EncryptedNothing>);
-        arbtest(test_encode_decode::<EncryptedPacketData>);
-        test_encode_decode_with_context::<EncryptedHandshakeInitiation>();
-        test_encode_decode_with_context::<EncryptedHandshakeResponse>();
-        test_encode_decode_with_context::<Message>();
+        arbtest(encode_decode_symmetry::<EncryptedStatic>);
+        arbtest(encode_decode_symmetry::<EncryptedTimestamp>);
+        arbtest(encode_decode_symmetry::<EncryptedNothing>);
+        arbtest(encode_decode_symmetry::<EncryptedPacketData>);
+        encode_decode_symmetry_with_context::<EncryptedHandshakeInitiation>();
+        encode_decode_symmetry_with_context::<EncryptedHandshakeResponse>();
+        encode_decode_symmetry_with_context::<Message>();
     }
 }

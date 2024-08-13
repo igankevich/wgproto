@@ -12,16 +12,16 @@ pub enum MessageType {
 }
 
 impl Decode for MessageType {
-    fn decode_from_slice(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
-        if slice.len() < 4 {
+    fn decode(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
+        if slice.len() < MESSAGE_TYPE_LEN {
             return Err(Error);
         }
-        Ok((slice[0].try_into()?, &slice[4..]))
+        Ok((slice[0].try_into()?, &slice[MESSAGE_TYPE_LEN..]))
     }
 }
 
 impl Encode for MessageType {
-    fn encode_to_vec(&self, buffer: &mut Vec<u8>) {
+    fn encode(&self, buffer: &mut Vec<u8>) {
         buffer.extend_from_slice(&[*self as u8, 0, 0, 0]);
     }
 }
@@ -38,16 +38,18 @@ impl TryFrom<u8> for MessageType {
     }
 }
 
+const MESSAGE_TYPE_LEN: usize = 4;
+
 #[cfg(test)]
 mod tests {
 
     use arbtest::arbtest;
 
     use super::*;
-    use crate::tests::test_encode_decode;
+    use crate::tests::encode_decode_symmetry;
 
     #[test]
     fn encode_decode() {
-        arbtest(test_encode_decode::<MessageType>);
+        arbtest(encode_decode_symmetry::<MessageType>);
     }
 }

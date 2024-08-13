@@ -31,15 +31,15 @@ impl Default for SessionIndex {
 }
 
 impl Decode for SessionIndex {
-    fn decode_from_slice(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (bytes, slice): ([u8; 4], _) = Decode::decode_from_slice(slice)?;
+    fn decode(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
+        let (bytes, slice): ([u8; 4], _) = Decode::decode(slice)?;
         let number = u32::from_le_bytes(bytes);
         Ok((SessionIndex { number }, slice))
     }
 }
 
 impl Encode for SessionIndex {
-    fn encode_to_vec(&self, buffer: &mut Vec<u8>) {
+    fn encode(&self, buffer: &mut Vec<u8>) {
         buffer.extend_from_slice(self.number.to_le_bytes().as_slice());
     }
 }
@@ -62,10 +62,10 @@ mod tests {
     use arbtest::arbtest;
 
     use super::*;
-    use crate::tests::test_encode_decode;
+    use crate::tests::encode_decode_symmetry;
 
     #[test]
     fn encode_decode() {
-        arbtest(test_encode_decode::<SessionIndex>);
+        arbtest(encode_decode_symmetry::<SessionIndex>);
     }
 }

@@ -357,12 +357,12 @@ impl Context<'_> {
             &blake2s_add(LABEL_MAC1, self.static_public),
             buffer.as_slice(),
         );
-        mac1.encode_to_vec(buffer);
+        mac1.encode(buffer);
         let mac2 = match self.cookie {
             Some(cookie) => keyed_blake2s(cookie.as_ref(), buffer.as_slice()),
             None => Default::default(),
         };
-        mac2.encode_to_vec(buffer);
+        mac2.encode(buffer);
     }
 
     pub fn verify(&self) -> Result<(), Error> {

@@ -13,19 +13,21 @@ use crate::EncodeWithContext;
 use crate::PublicKey;
 use crate::PUBLIC_KEY_LEN;
 
-pub(crate) fn test_encode_decode<T: Encode + Decode + Debug + PartialEq + for<'a> Arbitrary<'a>>(
+pub(crate) fn encode_decode_symmetry<
+    T: Encode + Decode + Debug + PartialEq + for<'a> Arbitrary<'a>,
+>(
     u: &mut Unstructured<'_>,
 ) -> Result<(), arbitrary::Error> {
     let expected: T = u.arbitrary()?;
     let mut buffer: Vec<u8> = Vec::new();
-    expected.encode_to_vec(&mut buffer);
-    let (actual, slice) = T::decode_from_slice(buffer.as_slice()).unwrap();
+    expected.encode(&mut buffer);
+    let (actual, slice) = T::decode(buffer.as_slice()).unwrap();
     assert!(slice.is_empty());
     assert_eq!(expected, actual);
     Ok(())
 }
 
-pub(crate) fn test_encode_decode_proxy<
+pub(crate) fn encode_decode_symmetry_with_proxy<
     P: for<'a> Arbitrary<'a>,
     T: Encode + Decode + Debug + PartialEq + From<P>,
 >(
@@ -34,8 +36,8 @@ pub(crate) fn test_encode_decode_proxy<
     let proxy: P = u.arbitrary()?;
     let expected: T = proxy.into();
     let mut buffer: Vec<u8> = Vec::new();
-    expected.encode_to_vec(&mut buffer);
-    let (actual, slice) = T::decode_from_slice(buffer.as_slice()).unwrap();
+    expected.encode(&mut buffer);
+    let (actual, slice) = T::decode(buffer.as_slice()).unwrap();
     assert!(slice.is_empty());
     assert_eq!(expected, actual);
     Ok(())
@@ -50,7 +52,7 @@ impl From<PublicKeyProxy> for PublicKey {
     }
 }
 
-pub(crate) fn test_encode_decode_with_context<T>()
+pub(crate) fn encode_decode_symmetry_with_context<T>()
 where
     T: for<'b> EncodeWithContext<Context<'b>>
         + for<'c> DecodeWithContext<Context<'c>>
