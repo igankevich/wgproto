@@ -6,7 +6,6 @@ use crate::Encode;
 use crate::EncodeWithContext;
 use crate::EncryptedBytes;
 use crate::Error;
-use crate::MessageType;
 use crate::PublicKey;
 use crate::SessionIndex;
 use crate::Timestamp;
@@ -14,6 +13,42 @@ use crate::HANDSHAKE_INITIATION_LEN;
 use crate::HANDSHAKE_RESPONSE_LEN;
 use crate::MAC_LEN;
 use crate::PUBLIC_KEY_LEN;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+#[cfg_attr(test, derive(arbitrary::Arbitrary))]
+#[repr(u8)]
+pub enum MessageType {
+    HandshakeInitiation = 1,
+    HandshakeResponse = 2,
+    PacketData = 4,
+}
+
+impl Decode for MessageType {
+    fn decode(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
+        if slice.len() < MESSAGE_TYPE_LEN {
+            return Err(Error);
+        }
+        Ok((slice[0].try_into()?, &slice[MESSAGE_TYPE_LEN..]))
+    }
+}
+
+impl Encode for MessageType {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        buffer.extend_from_slice(&[*self as u8, 0, 0, 0]);
+    }
+}
+
+impl TryFrom<u8> for MessageType {
+    type Error = Error;
+    fn try_from(other: u8) -> Result<Self, Self::Error> {
+        match other {
+            1 => Ok(Self::HandshakeInitiation),
+            2 => Ok(Self::HandshakeResponse),
+            4 => Ok(Self::PacketData),
+            _ => Err(Error),
+        }
+    }
+}
 
 #[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
 pub enum Message {
@@ -250,6 +285,7 @@ const ENCRYPTED_TAI_LEN: usize = aead_len(TAI64N_LEN);
 const ENCRYPTED_NOTHING_LEN: usize = aead_len(0);
 const COOKIE_LEN: usize = aead_len(16);
 const PACKET_DATA_HEADER_LEN: usize = 4 + 4 + 8;
+const MESSAGE_TYPE_LEN: usize = 4;
 
 const fn aead_len(n: usize) -> usize {
     n + 16
@@ -290,6 +326,7 @@ mod tests {
 
     #[test]
     fn encode_decode() {
+        arbtest(encode_decode_symmetry::<MessageType>);
         arbtest(encode_decode_symmetry::<EncryptedStatic>);
         arbtest(encode_decode_symmetry::<EncryptedTimestamp>);
         arbtest(encode_decode_symmetry::<EncryptedNothing>);
