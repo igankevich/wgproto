@@ -10,6 +10,8 @@ use crate::MessageType;
 use crate::PublicKey;
 use crate::SessionIndex;
 use crate::Timestamp;
+use crate::HANDSHAKE_INITIATION_LEN;
+use crate::HANDSHAKE_RESPONSE_LEN;
 use crate::MAC_LEN;
 use crate::PUBLIC_KEY_LEN;
 
@@ -28,12 +30,21 @@ impl Message {
             Message::PacketData(..) => MessageType::PacketData,
         }
     }
+
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        match self {
+            Message::HandshakeInitiation(..) => EncryptedHandshakeInitiation::LEN,
+            Message::HandshakeResponse(..) => EncryptedHandshakeResponse::LEN,
+            Message::PacketData(message) => message.len(),
+        }
+    }
 }
 
-impl DecodeWithContext<Context<'_>> for Message {
+impl DecodeWithContext<&mut Context<'_>> for Message {
     fn decode_with_context<'a>(
         slice: &'a [u8],
-        context: Context,
+        context: &mut Context,
     ) -> Result<(Self, &'a [u8]), Error> {
         let (message_type, slice) = MessageType::decode(slice)?;
         let (message, slice) = match message_type {
@@ -90,10 +101,14 @@ pub struct EncryptedHandshakeInitiation {
     pub encrypted_timestamp: EncryptedTimestamp,
 }
 
-impl DecodeWithContext<Context<'_>> for EncryptedHandshakeInitiation {
+impl EncryptedHandshakeInitiation {
+    const LEN: usize = HANDSHAKE_INITIATION_LEN;
+}
+
+impl DecodeWithContext<&mut Context<'_>> for EncryptedHandshakeInitiation {
     fn decode_with_context<'a>(
         slice: &'a [u8],
-        context: Context,
+        context: &mut Context,
     ) -> Result<(Self, &'a [u8]), Error> {
         let (sender_index, slice) = SessionIndex::decode(slice)?;
         let (unencrypted_ephemeral, slice) = PublicKey::decode(slice)?;
@@ -132,10 +147,14 @@ pub struct EncryptedHandshakeResponse {
     pub encrypted_nothing: EncryptedNothing,
 }
 
-impl DecodeWithContext<Context<'_>> for EncryptedHandshakeResponse {
+impl EncryptedHandshakeResponse {
+    const LEN: usize = HANDSHAKE_RESPONSE_LEN;
+}
+
+impl DecodeWithContext<&mut Context<'_>> for EncryptedHandshakeResponse {
     fn decode_with_context<'a>(
         slice: &'a [u8],
-        context: Context,
+        context: &mut Context,
     ) -> Result<(Self, &'a [u8]), Error> {
         let (sender_index, slice) = SessionIndex::decode(slice)?;
         let (receiver_index, slice) = SessionIndex::decode(slice)?;
@@ -171,6 +190,13 @@ pub struct EncryptedPacketData {
     pub receiver_index: SessionIndex,
     pub counter: Counter,
     pub encrypted_encapsulated_packet: Vec<u8>,
+}
+
+impl EncryptedPacketData {
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        PACKET_DATA_HEADER_LEN + self.encrypted_encapsulated_packet.len()
+    }
 }
 
 impl Decode for EncryptedPacketData {
@@ -223,6 +249,7 @@ const ENCRYPTED_STATIC_LEN: usize = aead_len(PUBLIC_KEY_LEN);
 const ENCRYPTED_TAI_LEN: usize = aead_len(TAI64N_LEN);
 const ENCRYPTED_NOTHING_LEN: usize = aead_len(0);
 const COOKIE_LEN: usize = aead_len(16);
+const PACKET_DATA_HEADER_LEN: usize = 4 + 4 + 8;
 
 const fn aead_len(n: usize) -> usize {
     n + 16
