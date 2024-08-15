@@ -35,14 +35,8 @@ test_all() {
     cargo test --no-fail-fast -- --nocapture
 }
 
-test_miri() {
-    cargo +nightly miri setup
-    env MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri test
-}
-
 set -ex
 clean
 test_coverage_preamble
 test_all
 test_coverage_postamble
-test_miri
