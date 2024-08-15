@@ -153,12 +153,16 @@ impl Initiator {
         let (temp2, temp3) = derive_keys(&self.chaining_key)?;
         Ok(Session {
             sender_index: self.sender_index,
-            receiver_index: response.receiver_index,
+            receiver_index: response.sender_index,
             sending_key: temp2,
             receiving_key: temp3,
             sending_key_counter: Default::default(),
             receiving_key_counter: Default::default(),
         })
+    }
+
+    pub fn sender_index(&self) -> SessionIndex {
+        self.sender_index
     }
 }
 
@@ -471,7 +475,7 @@ fn blake2s(slice: &[u8]) -> SecretData {
     digest.into()
 }
 
-fn blake2s_add(slice1: impl AsRef<[u8]>, slice2: impl AsRef<[u8]>) -> [u8; 32] {
+fn blake2s_add(slice1: impl AsRef<[u8]>, slice2: impl AsRef<[u8]>) -> U8_32 {
     use blake2::Digest;
     let mut hasher = Blake2s256::new();
     hasher.update(slice1.as_ref());

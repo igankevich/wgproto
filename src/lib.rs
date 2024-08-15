@@ -11,6 +11,7 @@ mod session_index;
 mod sink_source;
 #[cfg(test)]
 mod tests;
+mod timer;
 
 pub use tai64::Tai64N as Timestamp;
 pub use x25519_dalek::PublicKey;
@@ -28,3 +29,4 @@ pub(crate) use self::secret_data::*;
 pub use self::session::*;
 pub use self::session_index::*;
 pub use self::sink_source::*;
+pub(crate) use self::timer::*;
