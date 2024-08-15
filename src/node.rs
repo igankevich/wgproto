@@ -27,8 +27,6 @@ use crate::Session;
 use crate::SessionIndex;
 use crate::Sink;
 use crate::Source;
-use crate::Timer;
-use crate::TimerV2;
 
 /// Wireguard protocol state machine.
 pub struct Node<E = ()> {
@@ -119,22 +117,34 @@ impl<E: Clone + Hash + Eq> Node<E> {
     }
 
     pub fn next_event_time(&self) -> Option<Instant> {
-        let mut t: Option<Instant> = None;
+        let mut t_min: Option<Instant> = None;
         for state in self.peers.iter() {
-            state.initiation_retry_timer().accumulate_min(&mut t);
-            state.initiation_stop_timer().accumulate_min(&mut t);
-            state.next_initiation.accumulate_min(&mut t);
-            state.no_receive_timer().accumulate_min(&mut t);
-            state.no_send_timer().accumulate_min(&mut t);
-            state.session_ttl_timer().accumulate_min(&mut t);
-            state.new_handshake_on_send_timer().accumulate_min(&mut t);
-            state
-                .new_handshake_on_receive_timer()
-                .accumulate_min(&mut t);
-            state.packet_drop_timer().accumulate_min(&mut t);
-            state.persistent_keepalive_timer().accumulate_min(&mut t);
+            for timer in [
+                state.initiation_retry_timer(),
+                state.initiation_stop_timer(),
+                state.next_initiation,
+                state.no_receive_timer(),
+                state.no_send_timer(),
+                state.session_ttl_timer(),
+                state.new_handshake_on_send_timer(),
+                state.new_handshake_on_receive_timer(),
+                state.packet_drop_timer(),
+                state.persistent_keepalive_timer(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                match t_min.as_mut() {
+                    Some(t_min) => {
+                        if timer < *t_min {
+                            *t_min = timer;
+                        }
+                    }
+                    None => t_min = Some(timer),
+                }
+            }
         }
-        t
+        t_min
     }
 
     pub fn send(&mut self, data: Vec<u8>, destination: &PublicKey) -> Result<(), Error> {
@@ -701,6 +711,47 @@ impl Limit {
             format!("+{}", self.limit - self.counter)
         } else {
             format!("-{}", self.counter - self.limit)
+        }
+    }
+}
+
+trait Timer {
+    fn expired(&self, now: Instant) -> bool;
+}
+
+impl Timer for Instant {
+    fn expired(&self, now: Instant) -> bool {
+        self <= &now
+    }
+}
+
+trait OptionalTimer {
+    fn expired(&self, now: Instant, default_value: bool) -> bool;
+}
+
+impl OptionalTimer for Option<Instant> {
+    fn expired(&self, now: Instant, default_value: bool) -> bool {
+        match self {
+            Some(instant) => instant <= &now,
+            None => default_value,
+        }
+    }
+}
+
+#[cfg(test)]
+trait RemainingSecs {
+    fn remaining_secs(&self, now: Instant) -> String;
+}
+
+#[cfg(test)]
+impl RemainingSecs for Option<Instant> {
+    fn remaining_secs(&self, now: Instant) -> String {
+        match self {
+            Some(instant) => match instant.checked_duration_since(now) {
+                Some(dt) => format!("+{}s", dt.as_secs_f64()),
+                None => format!("-{}s", now.duration_since(*instant).as_secs_f64()),
+            },
+            None => "none".into(),
         }
     }
 }
