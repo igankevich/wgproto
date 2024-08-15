@@ -777,6 +777,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // timeouts are too small for miri
     fn node() {
         let parent_private_key = PrivateKey::random();
         let parent_public_key: PublicKey = (&parent_private_key).into();
