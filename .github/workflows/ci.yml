@@ -14,6 +14,7 @@ jobs:
       packages: write
       contents: write
     env:
+      TZ: Europe/Berlin
       RUST_BACKTRACE: 1
       CIJAIL_ENDPOINTS: |
         https://github.com/lyz-code/yamlfix/
@@ -22,6 +23,7 @@ jobs:
         https://static.crates.io/crates/
         https://index.crates.io/
         https://github.com/rustsec/advisory-db
+        https://static.rust-lang.org/dist/
     steps:
       - name: Checkout
         uses: actions/checkout@v4.1.4
@@ -29,3 +31,5 @@ jobs:
         run: cijail ./ci/lint.sh
       - name: Test
         run: cijail ./ci/test.sh
+      - name: Miri
+        run: cijail ./ci/miri.sh

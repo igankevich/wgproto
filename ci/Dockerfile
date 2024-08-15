@@ -18,7 +18,9 @@ ENV CARGO_HOME=/usr/local/cargo \
     RUST_VERSION=1.80.1 \
     PATH=/usr/local/cargo/bin:$PATH
 
-RUN rustup toolchain add nightly --target x86_64-unknown-linux-gnu
+RUN rustup toolchain add nightly \
+    --target x86_64-unknown-linux-gnu \
+    --component rustfmt miri
 RUN rustup toolchain add 1.80.1 \
     --target x86_64-unknown-linux-gnu \
     --component clippy rustfmt llvm-tools-preview
