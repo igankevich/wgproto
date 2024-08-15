@@ -8,6 +8,7 @@ use rand_core::RngCore;
 use crate::Decode;
 use crate::Encode;
 use crate::Error;
+use crate::InputBuffer;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 #[cfg_attr(test, derive(arbitrary::Arbitrary))]
@@ -31,10 +32,10 @@ impl Default for SessionIndex {
 }
 
 impl Decode for SessionIndex {
-    fn decode(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (bytes, slice): ([u8; 4], _) = Decode::decode(slice)?;
+    fn decode(buffer: &mut InputBuffer) -> Result<Self, Error> {
+        let bytes: [u8; SESSION_INDEX_LEN] = Decode::decode(buffer)?;
         let number = u32::from_le_bytes(bytes);
-        Ok((SessionIndex { number }, slice))
+        Ok(SessionIndex { number })
     }
 }
 
@@ -55,6 +56,8 @@ impl Debug for SessionIndex {
         Debug::fmt(&self.number, f)
     }
 }
+
+const SESSION_INDEX_LEN: usize = 4;
 
 #[cfg(test)]
 mod tests {

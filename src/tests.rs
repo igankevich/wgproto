@@ -10,6 +10,7 @@ use crate::Decode;
 use crate::DecodeWithContext;
 use crate::Encode;
 use crate::EncodeWithContext;
+use crate::InputBuffer;
 use crate::PublicKey;
 use crate::PUBLIC_KEY_LEN;
 
@@ -21,8 +22,9 @@ pub(crate) fn encode_decode_symmetry<
     let expected: T = u.arbitrary()?;
     let mut buffer: Vec<u8> = Vec::new();
     expected.encode(&mut buffer);
-    let (actual, slice) = T::decode(buffer.as_slice()).unwrap();
-    assert!(slice.is_empty());
+    let mut buffer = InputBuffer::new(buffer.as_slice());
+    let actual = T::decode(&mut buffer).unwrap();
+    assert!(buffer.is_empty());
     assert_eq!(expected, actual);
     Ok(())
 }
@@ -37,8 +39,9 @@ pub(crate) fn encode_decode_symmetry_with_proxy<
     let expected: T = proxy.into();
     let mut buffer: Vec<u8> = Vec::new();
     expected.encode(&mut buffer);
-    let (actual, slice) = T::decode(buffer.as_slice()).unwrap();
-    assert!(slice.is_empty());
+    let mut buffer = InputBuffer::new(buffer.as_slice());
+    let actual = T::decode(&mut buffer).unwrap();
+    assert!(buffer.is_empty());
     assert_eq!(expected, actual);
     Ok(())
 }
@@ -69,7 +72,6 @@ where
         let context = Context {
             static_public: &static_public,
             cookie: cookie.as_ref(),
-            data: &[],
             under_load: false,
             mac2_is_valid: None,
         };
@@ -77,12 +79,12 @@ where
         let mut context = Context {
             static_public: &static_public,
             cookie: cookie.as_ref(),
-            data: buffer.as_slice(),
             under_load: false,
             mac2_is_valid: None,
         };
-        let (actual, slice) = T::decode_with_context(buffer.as_slice(), &mut context).unwrap();
-        assert!(slice.is_empty());
+        let mut buffer = InputBuffer::new(buffer.as_slice());
+        let actual = T::decode_with_context(&mut buffer, &mut context).unwrap();
+        assert!(buffer.is_empty());
         assert_eq!(expected, actual);
         Ok(())
     });

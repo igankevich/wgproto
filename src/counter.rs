@@ -5,6 +5,7 @@ use std::fmt::Formatter;
 use crate::Decode;
 use crate::Encode;
 use crate::Error;
+use crate::InputBuffer;
 
 #[derive(PartialEq, Eq, PartialOrd, Hash, Clone, Copy)]
 #[cfg_attr(test, derive(arbitrary::Arbitrary))]
@@ -34,10 +35,10 @@ impl Default for Counter {
 }
 
 impl Decode for Counter {
-    fn decode(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (bytes, slice): ([u8; 8], _) = Decode::decode(slice)?;
+    fn decode(buffer: &mut InputBuffer) -> Result<Self, Error> {
+        let bytes: [u8; COUNTER_LEN] = Decode::decode(buffer)?;
         let number = u64::from_le_bytes(bytes);
-        Ok((Counter { number }, slice))
+        Ok(Counter { number })
     }
 }
 
@@ -58,6 +59,8 @@ impl Debug for Counter {
         Debug::fmt(&self.number, f)
     }
 }
+
+const COUNTER_LEN: usize = 8;
 
 #[cfg(test)]
 mod tests {

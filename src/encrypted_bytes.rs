@@ -1,6 +1,7 @@
 use crate::Decode;
 use crate::Encode;
 use crate::Error;
+use crate::InputBuffer;
 
 #[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
 #[repr(transparent)]
@@ -9,9 +10,9 @@ pub struct EncryptedBytes<const N: usize> {
 }
 
 impl<const N: usize> Decode for EncryptedBytes<N> {
-    fn decode(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (data, slice): ([u8; N], _) = Decode::decode(slice)?;
-        Ok((data.into(), slice))
+    fn decode(buffer: &mut InputBuffer) -> Result<Self, Error> {
+        let data: [u8; N] = Decode::decode(buffer)?;
+        Ok(data.into())
     }
 }
 

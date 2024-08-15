@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::hash::Hash;
+use std::mem::take;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -10,6 +11,7 @@ use crate::DecodeWithContext;
 use crate::EncodeWithContext;
 use crate::Error;
 use crate::Initiator;
+use crate::InputBuffer;
 use crate::Message;
 use crate::PresharedKey;
 use crate::PrivateKey;
@@ -17,23 +19,25 @@ use crate::PublicKey;
 use crate::Responder;
 use crate::Session;
 use crate::SessionIndex;
+use crate::Sink;
+use crate::Source;
 
 /// Wireguard protocol state machine.
 pub struct Node<E = ()> {
-    public_key: PublicKey,
     private_key: PrivateKey,
+    public_key: PublicKey,
     cookie: Option<Cookie>,
     peers: Vec<PeerState<E>>,
     public_key_to_peer: HashMap<PublicKey, usize>,
     endpoint_to_peer: HashMap<E, usize>,
     session_index_to_peer: HashMap<SessionIndex, usize>,
-    incoming_packets: VecDeque<(Vec<u8>, E)>,
+    incoming_packets: Vec<(Vec<u8>, E)>,
     now: Instant,
     under_load: bool,
 }
 
 impl<E: Clone + Hash + Eq> Node<E> {
-    pub fn new(public_key: PublicKey, private_key: PrivateKey, peers: Vec<Peer<E>>) -> Self {
+    pub fn new(private_key: PrivateKey, peers: Vec<Peer<E>>) -> Self {
         let mut new_peers: Vec<PeerState<E>> = Vec::with_capacity(peers.len());
         let mut public_key_to_peer = HashMap::new();
         let mut endpoint_to_peer = HashMap::new();
@@ -51,9 +55,10 @@ impl<E: Clone + Hash + Eq> Node<E> {
                 next_initiation: None,
             });
         }
+        let public_key = (&private_key).into();
         Self {
-            public_key,
             private_key,
+            public_key,
             cookie: Default::default(),
             peers: new_peers,
             public_key_to_peer,
@@ -118,13 +123,13 @@ impl<E: Clone + Hash + Eq> Node<E> {
         Ok(())
     }
 
-    pub fn flush<S: NodeSink<E>>(&mut self, sink: &mut S) -> Result<(), std::io::Error> {
+    pub fn flush<S: Sink<E>>(&mut self, sink: &mut S) -> Result<(), std::io::Error> {
         for state in self.peers.iter_mut() {
             let mut sent_some = false;
             while let Some(packet) = state.outgoing_packets.front_mut() {
                 let endpoint = match state.peer.endpoint.as_ref() {
                     Some(endpoint) => endpoint,
-                    None => continue,
+                    None => break,
                 };
                 let n = sink.send(packet, endpoint)?;
                 if n != 0 {
@@ -143,53 +148,61 @@ impl<E: Clone + Hash + Eq> Node<E> {
         Ok(())
     }
 
-    pub fn fill<S: NodeSource<E>>(
+    pub fn fill<S: Source<E>>(
         &mut self,
         buffer: &mut [u8],
         source: &mut S,
     ) -> Result<(), std::io::Error> {
-        loop {
-            let (n, endpoint) = source.receive(buffer)?;
+        // TODO receive Vec<u8>
+        while let Some((n, endpoint)) = source.receive(buffer)? {
             if n == 0 {
                 break;
             }
-            self.incoming_packets
-                .push_back((buffer[..n].into(), endpoint));
+            self.incoming_packets.push((buffer[..n].into(), endpoint));
         }
         Ok(())
     }
 
     pub fn receive(&mut self) -> Result<Option<(Vec<u8>, PublicKey)>, Error> {
-        while let Some((packet, endpoint)) = self.incoming_packets.pop_front() {
-            match self.process_incoming_packet(packet, endpoint) {
-                ret @ Ok(Some(_)) => return ret,
-                Ok(None) => {}
-                Err(e) => {
-                    eprintln!("failed to process incoming packet: {}", e);
+        let mut incoming_packets = take(&mut self.incoming_packets);
+        let mut ret: Option<(Vec<u8>, PublicKey)> = None;
+        for (packets, endpoint) in incoming_packets.iter_mut() {
+            let mut buffer = InputBuffer::new(packets.as_slice());
+            while !buffer.is_empty() {
+                match self.process_incoming_packet(&mut buffer, endpoint) {
+                    Ok(other_ret @ Some(_)) => {
+                        ret = other_ret;
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        eprintln!("failed to process incoming packet: {}", e);
+                    }
                 }
             }
+            packets.drain(..buffer.position());
         }
-        Ok(None)
+        self.incoming_packets = incoming_packets;
+        Ok(ret)
     }
 
     fn process_incoming_packet(
         &mut self,
-        packet: Vec<u8>,
-        endpoint: E,
+        buffer: &mut InputBuffer,
+        endpoint: &E,
     ) -> Result<Option<(Vec<u8>, PublicKey)>, Error> {
         let mut context = Context {
             static_public: &self.public_key,
             // TODO last sent cookie?
             cookie: self.cookie.as_ref(),
-            data: packet.as_slice(),
             under_load: self.under_load,
             mac2_is_valid: None,
         };
-        let (message, _slice) = Message::decode_with_context(packet.as_slice(), &mut context)?;
+        let message = Message::decode_with_context(buffer, &mut context)?;
         if let Some(false) = context.mac2_is_valid {
             // TODO send cookie
         }
-        let i = self.endpoint_to_peer.get(&endpoint).copied();
+        let i = self.endpoint_to_peer.get(endpoint).copied();
         match message {
             Message::HandshakeInitiation(message) => {
                 let (mut responder, message) =
@@ -248,7 +261,7 @@ impl<E: Clone + Hash + Eq> Node<E> {
                 let peer = &mut self.peers[i];
                 if let Some(session) = peer.session.as_mut() {
                     if session.created_at + REJECT_AFTER_TIME < self.now
-                        || session.num_send_and_received() > REJECT_AFTER_MESSAGES
+                        || session.num_sent_and_received() > REJECT_AFTER_MESSAGES
                     {
                         return Ok(None);
                     }
@@ -330,18 +343,10 @@ struct SessionState {
 }
 
 impl SessionState {
-    fn num_send_and_received(&self) -> u64 {
+    fn num_sent_and_received(&self) -> u64 {
         self.session.receiving_key_counter().as_u64()
             + self.session.receiving_key_counter().as_u64()
     }
-}
-
-pub trait NodeSink<E> {
-    fn send(&mut self, data: &[u8], peer: &E) -> Result<usize, std::io::Error>;
-}
-
-pub trait NodeSource<E> {
-    fn receive(&mut self, data: &mut [u8]) -> Result<(usize, E), std::io::Error>;
 }
 
 // from the original Wireguard paper
@@ -353,3 +358,58 @@ const _REKEY_ATTEMPT_TIME: Duration = Duration::from_secs(90);
 const REKEY_TIMEOUT: Duration = Duration::from_secs(5);
 const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
 const _COOKIE_TTL: Duration = Duration::from_secs(120);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node() {
+        let parent_private_key = PrivateKey::random();
+        let parent_public_key: PublicKey = (&parent_private_key).into();
+        let preshared_key = PresharedKey::random();
+        let mut parent: Node<()> = Node::new(
+            PrivateKey::random(),
+            vec![Peer {
+                public_key: parent_public_key,
+                preshared_key: preshared_key.clone(),
+                _persistent_keepalive: Duration::ZERO,
+                endpoint: None,
+            }],
+        );
+        let mut child: Node<()> = Node::new(
+            PrivateKey::random(),
+            vec![Peer {
+                public_key: parent.public_key,
+                preshared_key: preshared_key.clone(),
+                _persistent_keepalive: Duration::ZERO,
+                endpoint: Some(()),
+            }],
+        );
+        let mut child_outgoing_packets: VecDeque<Vec<u8>> = Default::default();
+        let expected_data = "hello world";
+        child.advance(Instant::now()).unwrap();
+        child
+            .send(expected_data.as_bytes(), &parent.public_key)
+            .unwrap();
+        child.flush(&mut child_outgoing_packets).unwrap();
+        parent.advance(Instant::now()).unwrap();
+        //parent.fill(&mut child_outgoing_packets).unwrap();
+    }
+
+    impl Sink<()> for VecDeque<Vec<u8>> {
+        fn send(&mut self, data: &[u8], _: &()) -> Result<usize, std::io::Error> {
+            self.push_back(data.to_vec());
+            Ok(data.len())
+        }
+    }
+
+    impl Source<()> for VecDeque<Vec<u8>> {
+        fn receive(&mut self, _data: &mut [u8]) -> Result<Option<(usize, ())>, std::io::Error> {
+            match self.pop_front() {
+                Some(data) => Ok(Some((data.len(), ()))),
+                None => Ok(None),
+            }
+        }
+    }
+}
