@@ -23,3 +23,9 @@ impl Debug for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl From<Error> for std::io::Error {
+    fn from(_other: Error) -> Self {
+        Self::new(std::io::ErrorKind::Other, "wgproto error")
+    }
+}

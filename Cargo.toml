@@ -8,7 +8,9 @@ license = "MIT"
 blake2 = { version = "0.10.6", features = ["std"], default-features = false }
 chacha20poly1305 = { version = "0.10.1", features = ["std"], default-features = false }
 hmac = { version = "0.12.1", features = [], default-features = false }
+rand = { version = "0.8.5", features = [], default-features = false }
 rand_core = { version = "0.6.4", features = ["getrandom"], default-features = false }
+static_assertions = { version = "1.1.0", features = [], default-features = false }
 tai64 = { version = "4.0.0", features = ["std"], default-features = false }
 x25519-dalek = { version = "2.0.1", features = ["getrandom", "static_secrets"], default-features = true }
 zeroize = { version = "1.8.1", features = ["zeroize_derive"], default-features = true }

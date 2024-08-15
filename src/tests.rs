@@ -10,22 +10,26 @@ use crate::Decode;
 use crate::DecodeWithContext;
 use crate::Encode;
 use crate::EncodeWithContext;
+use crate::InputBuffer;
 use crate::PublicKey;
 use crate::PUBLIC_KEY_LEN;
 
-pub(crate) fn test_encode_decode<T: Encode + Decode + Debug + PartialEq + for<'a> Arbitrary<'a>>(
+pub(crate) fn encode_decode_symmetry<
+    T: Encode + Decode + Debug + PartialEq + for<'a> Arbitrary<'a>,
+>(
     u: &mut Unstructured<'_>,
 ) -> Result<(), arbitrary::Error> {
     let expected: T = u.arbitrary()?;
     let mut buffer: Vec<u8> = Vec::new();
-    expected.encode_to_vec(&mut buffer);
-    let (actual, slice) = T::decode_from_slice(buffer.as_slice()).unwrap();
-    assert!(slice.is_empty());
+    expected.encode(&mut buffer);
+    let mut buffer = InputBuffer::new(buffer.as_slice());
+    let actual = T::decode(&mut buffer).unwrap();
+    assert!(buffer.is_empty());
     assert_eq!(expected, actual);
     Ok(())
 }
 
-pub(crate) fn test_encode_decode_proxy<
+pub(crate) fn encode_decode_symmetry_with_proxy<
     P: for<'a> Arbitrary<'a>,
     T: Encode + Decode + Debug + PartialEq + From<P>,
 >(
@@ -34,9 +38,10 @@ pub(crate) fn test_encode_decode_proxy<
     let proxy: P = u.arbitrary()?;
     let expected: T = proxy.into();
     let mut buffer: Vec<u8> = Vec::new();
-    expected.encode_to_vec(&mut buffer);
-    let (actual, slice) = T::decode_from_slice(buffer.as_slice()).unwrap();
-    assert!(slice.is_empty());
+    expected.encode(&mut buffer);
+    let mut buffer = InputBuffer::new(buffer.as_slice());
+    let actual = T::decode(&mut buffer).unwrap();
+    assert!(buffer.is_empty());
     assert_eq!(expected, actual);
     Ok(())
 }
@@ -50,10 +55,10 @@ impl From<PublicKeyProxy> for PublicKey {
     }
 }
 
-pub(crate) fn test_encode_decode_with_context<T>()
+pub(crate) fn encode_decode_symmetry_with_context<T>()
 where
     T: for<'b> EncodeWithContext<Context<'b>>
-        + for<'c> DecodeWithContext<Context<'c>>
+        + for<'c, 'c2> DecodeWithContext<&'c2 mut Context<'c>>
         + Debug
         + PartialEq
         + for<'a> Arbitrary<'a>,
@@ -67,16 +72,19 @@ where
         let context = Context {
             static_public: &static_public,
             cookie: cookie.as_ref(),
-            data: &[],
+            under_load: false,
+            mac2_is_valid: None,
         };
         expected.encode_with_context(&mut buffer, context);
-        let context = Context {
+        let mut context = Context {
             static_public: &static_public,
             cookie: cookie.as_ref(),
-            data: buffer.as_slice(),
+            under_load: false,
+            mac2_is_valid: None,
         };
-        let (actual, slice) = T::decode_with_context(buffer.as_slice(), context).unwrap();
-        assert!(slice.is_empty());
+        let mut buffer = InputBuffer::new(buffer.as_slice());
+        let actual = T::decode_with_context(&mut buffer, &mut context).unwrap();
+        assert!(buffer.is_empty());
         assert_eq!(expected, actual);
         Ok(())
     });

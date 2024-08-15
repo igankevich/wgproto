@@ -5,6 +5,7 @@ use std::fmt::Formatter;
 use crate::Decode;
 use crate::Encode;
 use crate::Error;
+use crate::InputBuffer;
 
 #[derive(PartialEq, Eq, PartialOrd, Hash, Clone, Copy)]
 #[cfg_attr(test, derive(arbitrary::Arbitrary))]
@@ -34,15 +35,15 @@ impl Default for Counter {
 }
 
 impl Decode for Counter {
-    fn decode_from_slice(slice: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (bytes, slice): ([u8; 8], _) = Decode::decode_from_slice(slice)?;
+    fn decode(buffer: &mut InputBuffer) -> Result<Self, Error> {
+        let bytes: [u8; COUNTER_LEN] = Decode::decode(buffer)?;
         let number = u64::from_le_bytes(bytes);
-        Ok((Counter { number }, slice))
+        Ok(Counter { number })
     }
 }
 
 impl Encode for Counter {
-    fn encode_to_vec(&self, buffer: &mut Vec<u8>) {
+    fn encode(&self, buffer: &mut Vec<u8>) {
         buffer.extend_from_slice(self.number.to_le_bytes().as_slice());
     }
 }
@@ -59,16 +60,18 @@ impl Debug for Counter {
     }
 }
 
+const COUNTER_LEN: usize = 8;
+
 #[cfg(test)]
 mod tests {
 
     use arbtest::arbtest;
 
     use super::*;
-    use crate::tests::test_encode_decode;
+    use crate::tests::encode_decode_symmetry;
 
     #[test]
     fn encode_decode() {
-        arbtest(test_encode_decode::<Counter>);
+        arbtest(encode_decode_symmetry::<Counter>);
     }
 }
