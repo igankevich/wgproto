@@ -2,9 +2,13 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::hash::Hash;
 use std::mem::take;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::time::Duration;
 use std::time::Instant;
 
+use rand::Rng;
+use rand_core::OsRng;
 use static_assertions::const_assert;
 
 use crate::Context;
@@ -24,6 +28,7 @@ use crate::SessionIndex;
 use crate::Sink;
 use crate::Source;
 use crate::Timer;
+use crate::TimerV2;
 
 /// Wireguard protocol state machine.
 pub struct Node<E = ()> {
@@ -62,7 +67,10 @@ impl<E: Clone + Hash + Eq> Node<E> {
                 outgoing_packets: Default::default(),
                 outgoing_data_packets: Default::default(),
                 last_sent: None,
+                last_received: None,
                 next_initiation: Default::default(),
+                initiated_at: None,
+                retry_jitter: 0,
             });
         }
         let public_key = (&private_key).into();
@@ -85,27 +93,48 @@ impl<E: Clone + Hash + Eq> Node<E> {
     pub fn advance(&mut self, now: Instant) -> Result<(), Error> {
         self.now = now;
         for state in self.peers.iter_mut() {
-            if let Some(session) = state.session.as_ref() {
-                if session.ttl().has_expired(self.now) {
-                    state.destroy_session();
+            if state.session_ttl_timer().expired(self.now, false) {
+                state.destroy_session();
+            }
+            if state.initiation_stop_timer().expired(self.now, false) {
+                state.destroy_initiator();
+            }
+            if state.initiation_retry_timer().expired(self.now, false)
+                || state.no_receive_timer().expired(self.now, false)
+            {
+                state.new_initiator(self.public_key, self.private_key.clone(), self.now)?;
+            }
+            if state.no_send_timer().expired(self.now, false) {
+                if let Some(session) = state.session.as_mut() {
+                    session.session.send(&[])?;
                 }
             }
-            /*
-            if let Some(session) = state.session.as_mut() {
-                let keepalive = match state.last_sent {
-                    Some(last_sent) if timeout_expired(self.now, last_sent, KEEPALIVE_TIMEOUT) => {
-                        true
-                    }
-                    None => true,
-                    _ => false,
-                };
-                if keepalive {
-                    session.send(&[])?;
+            if state.persistent_keepalive_timer().expired(self.now, false) {
+                if let Some(session) = state.session.as_mut() {
+                    session.session.send(&[])?;
                 }
             }
-                */
         }
         Ok(())
+    }
+
+    pub fn next_event_time(&self) -> Option<Instant> {
+        let mut t: Option<Instant> = None;
+        for state in self.peers.iter() {
+            state.initiation_retry_timer().accumulate_min(&mut t);
+            state.initiation_stop_timer().accumulate_min(&mut t);
+            state.next_initiation.accumulate_min(&mut t);
+            state.no_receive_timer().accumulate_min(&mut t);
+            state.no_send_timer().accumulate_min(&mut t);
+            state.session_ttl_timer().accumulate_min(&mut t);
+            state.new_handshake_on_send_timer().accumulate_min(&mut t);
+            state
+                .new_handshake_on_receive_timer()
+                .accumulate_min(&mut t);
+            state.packet_drop_timer().accumulate_min(&mut t);
+            state.persistent_keepalive_timer().accumulate_min(&mut t);
+        }
+        t
     }
 
     pub fn send(&mut self, data: Vec<u8>, destination: &PublicKey) -> Result<(), Error> {
@@ -114,23 +143,17 @@ impl<E: Clone + Hash + Eq> Node<E> {
         state.outgoing_data_packets.push_back(data);
         match state.session.as_mut() {
             Some(session) => {
-                if session.new_handshake_on_send_limit().is_reached()
-                    || session.new_handshake_on_send_timer().has_expired(self.now)
+                if session.new_handshake_on_send_limit().reached()
+                    || session
+                        .new_handshake_on_send_timer()
+                        .expired(self.now, false)
                 {
                     state.session = None;
-                    state.initiate_new_handshake(
-                        self.public_key,
-                        self.private_key.clone(),
-                        self.now,
-                    )?;
+                    state.new_initiator(self.public_key, self.private_key.clone(), self.now)?;
                 }
             }
             None => {
-                state.initiate_new_handshake(
-                    self.public_key,
-                    self.private_key.clone(),
-                    self.now,
-                )?;
+                state.new_initiator(self.public_key, self.private_key.clone(), self.now)?;
             }
         };
         Ok(())
@@ -138,37 +161,8 @@ impl<E: Clone + Hash + Eq> Node<E> {
 
     pub fn flush<S: Sink<E>>(&mut self, sink: &mut S) -> Result<(), std::io::Error> {
         for state in self.peers.iter_mut() {
-            let mut sent_some = false;
-            let endpoint = match state.peer.endpoint.as_ref() {
-                Some(endpoint) => endpoint,
-                None => {
-                    eprintln!("no endpoint");
-                    continue;
-                }
-            };
-            // send handshake messages
-            while let Some(packet) = state.outgoing_packets.pop_front() {
-                eprintln!("send {}", packet.len());
-                sink.send(packet.as_slice(), endpoint)?;
-                sent_some = true;
-            }
-            // send data messages
-            if let Some(session) = state.session.as_mut() {
-                while let Some(data) = state.outgoing_data_packets.pop_front() {
-                    let message = session.session.send(data.as_slice())?;
-                    let mut packet = Vec::with_capacity(message.len());
-                    message.encode_with_context(
-                        &mut packet,
-                        session.session.context(&self.public_key),
-                    );
-                    eprintln!("send {:?}", message.get_type());
-                    sink.send(packet.as_slice(), endpoint)?;
-                    sent_some = true;
-                }
-            }
-            if sent_some {
-                state.last_sent = Some(self.now);
-            }
+            let mut guard = state.last_sent_guard(self.now);
+            guard.flush(sink, &self.public_key)?;
         }
         Ok(())
     }
@@ -190,12 +184,15 @@ impl<E: Clone + Hash + Eq> Node<E> {
             let mut buffer = InputBuffer::new(packets.as_slice());
             match self.process_incoming_packet(&mut buffer, endpoint) {
                 Ok(other_ret @ Some(_)) => {
+                    // return data packets
                     ret = other_ret;
                     break;
                 }
-                Ok(None) => {}
-                Err(e) => {
-                    eprintln!("failed to process incoming packet: {}", e);
+                Ok(None) => {
+                    // process handshake packets
+                }
+                Err(_) => {
+                    // ignore invalid packets
                 }
             }
         }
@@ -216,17 +213,14 @@ impl<E: Clone + Hash + Eq> Node<E> {
             mac2_is_valid: None,
         };
         let message = Message::decode_with_context(buffer, &mut context)?;
-        eprintln!("receive {:?}", message.get_type());
         if let Some(false) = context.mac2_is_valid {
             // TODO send cookie
         }
         let i = self.endpoint_to_peer.get(&endpoint).copied();
         match message {
             Message::HandshakeInitiation(message) => {
-                eprintln!("receive 0");
                 let (mut responder, message) =
                     Responder::new(self.public_key, self.private_key.clone(), message)?;
-                eprintln!("receive 1");
                 let i = match i {
                     Some(i) => i,
                     None => {
@@ -238,16 +232,15 @@ impl<E: Clone + Hash + Eq> Node<E> {
                         i
                     }
                 };
-                eprintln!("receive 2");
                 let peer = &mut self.peers[i];
                 if peer.peer.endpoint.is_none() {
                     peer.peer.endpoint = Some(endpoint);
                 }
+                peer.last_received = Some(self.now);
                 let (session, outgoing_packet) =
                     responder.handshake_response(&message, &peer.peer.preshared_key)?;
-                eprintln!("receive 3");
                 let receiver_index = session.receiver_index();
-                peer.session = Some(SessionState {
+                peer.new_session(SessionState {
                     session,
                     created_at: self.now,
                     was_initiator: false,
@@ -272,12 +265,12 @@ impl<E: Clone + Hash + Eq> Node<E> {
                 if peer.peer.endpoint.is_none() {
                     peer.peer.endpoint = Some(endpoint);
                 }
-                eprintln!("response");
-                if peer.next_initiation.has_expired(self.now) {
+                peer.last_received = Some(self.now);
+                if peer.next_initiation.expired(self.now, false) {
                     peer.initiator = None;
                 }
                 if let Some(initiator) = peer.initiator.take() {
-                    peer.session = Some(SessionState {
+                    peer.new_session(SessionState {
                         session: initiator.on_handshake_response(message)?,
                         created_at: self.now,
                         was_initiator: true,
@@ -286,7 +279,6 @@ impl<E: Clone + Hash + Eq> Node<E> {
                 Ok(None)
             }
             Message::PacketData(message) => {
-                eprintln!("receive packet-data 0");
                 let i = match i {
                     Some(i) => i,
                     None => *self
@@ -294,40 +286,30 @@ impl<E: Clone + Hash + Eq> Node<E> {
                         .get(&message.receiver_index)
                         .ok_or(Error)?,
                 };
-                eprintln!("receive packet-data 1");
                 let peer = &mut self.peers[i];
                 if let Some(session) = peer.session.as_mut() {
-                    eprintln!("receive packet-data 2a");
-                    if session.packet_drop_timer().has_expired(self.now)
-                        || session.packet_drop_limit().is_reached()
+                    if session.packet_drop_timer().expired(self.now)
+                        || session.packet_drop_limit().reached()
                     {
                         return Ok(None);
                     }
-                    eprintln!("receive packet-data 2a 1");
                     let data = session.session.receive(&message)?;
-                    eprintln!("receive packet-data 2a 2");
+                    peer.last_received = Some(self.now);
                     let ret = if data.is_empty() {
                         // do not return keepalive packets
                         Ok(None)
                     } else {
                         Ok(Some((data, peer.peer.public_key)))
                     };
-                    eprintln!("receive packet-data 2a 3");
                     if peer.initiator.is_none()
                         && session
                             .new_handshake_on_receive_timer()
-                            .has_expired(self.now)
+                            .expired(self.now, false)
                     {
-                        peer.initiate_new_handshake(
-                            self.public_key,
-                            self.private_key.clone(),
-                            self.now,
-                        )?;
+                        peer.new_initiator(self.public_key, self.private_key.clone(), self.now)?;
                     }
-                    eprintln!("receive packet-data 2a 4");
                     ret
                 } else {
-                    eprintln!("receive packet-data 2b");
                     Ok(None)
                 }
             }
@@ -363,12 +345,38 @@ impl std::fmt::Debug for Node {
         for state in self.peers.iter() {
             writeln!(
                 f,
+                "next-initiation {}",
+                state.initiation_retry_timer().remaining_secs(self.now)
+            )?;
+            writeln!(
+                f,
+                "stop-initiation {}",
+                state.initiation_stop_timer().remaining_secs(self.now)
+            )?;
+            writeln!(
+                f,
+                "next-initiation-is-allowed-in {}",
+                state.next_initiation.remaining_secs(self.now)
+            )?;
+            writeln!(
+                f,
+                "new-handshake-on-no-receive {}",
+                state.no_receive_timer().remaining_secs(self.now)
+            )?;
+            writeln!(
+                f,
+                "keepalive-on-no-send {}",
+                state.no_send_timer().remaining_secs(self.now)
+            )?;
+            writeln!(
+                f,
+                "session-ttl {}",
+                state.session_ttl_timer().remaining_secs(self.now),
+            )?;
+            writeln!(
+                f,
                 "new-handshake-on-send {} or {} messages",
-                state
-                    .session
-                    .as_ref()
-                    .and_then(|session| session.new_handshake_on_send_timer())
-                    .remaining_secs(self.now),
+                state.new_handshake_on_send_timer().remaining_secs(self.now),
                 state
                     .session
                     .as_ref()
@@ -379,24 +387,13 @@ impl std::fmt::Debug for Node {
                 f,
                 "new-handshake-on-receive {}",
                 state
-                    .session
-                    .as_ref()
-                    .and_then(|session| session.new_handshake_on_receive_timer())
+                    .new_handshake_on_receive_timer()
                     .remaining_secs(self.now)
             )?;
             writeln!(
                 f,
-                "next-initiation-is-allowed-in {}",
-                state.next_initiation.remaining_secs(self.now)
-            )?;
-            writeln!(
-                f,
                 "packet-drop {} or {} messages",
-                state
-                    .session
-                    .as_ref()
-                    .map(|session| session.packet_drop_timer())
-                    .remaining_secs(self.now),
+                state.packet_drop_timer().remaining_secs(self.now),
                 state
                     .session
                     .as_ref()
@@ -404,6 +401,12 @@ impl std::fmt::Debug for Node {
                     .unwrap_or_else(|| "none".to_string()),
             )?;
         }
+        writeln!(
+            f,
+            "{} > next event time {}",
+            self.name,
+            self.next_event_time().remaining_secs(self.now)
+        )?;
         writeln!(f, "-")?;
         Ok(())
     }
@@ -412,8 +415,7 @@ impl std::fmt::Debug for Node {
 pub struct Peer<E> {
     public_key: PublicKey,
     preshared_key: PresharedKey,
-    // TODO
-    _persistent_keepalive: Duration,
+    persistent_keepalive: Duration,
     endpoint: Option<E>,
 }
 
@@ -426,20 +428,20 @@ struct PeerState<E> {
     // unencoded data
     outgoing_data_packets: VecDeque<Vec<u8>>,
     last_sent: Option<Instant>,
+    last_received: Option<Instant>,
     next_initiation: Option<Instant>,
+    initiated_at: Option<Instant>,
+    retry_jitter: u64,
 }
 
 impl<E> PeerState<E> {
-    fn initiate_new_handshake(
+    fn new_initiator(
         &mut self,
         public_key: PublicKey,
         private_key: PrivateKey,
         now: Instant,
     ) -> Result<(), Error> {
-        if self.initiator.is_some() {
-            return Ok(());
-        }
-        if self.next_initiation.has_expired(now) {
+        if self.initiator.is_some() || !self.next_initiation.expired(now, true) {
             return Ok(());
         }
         let (initiator, packet) = Initiator::new(
@@ -449,14 +451,186 @@ impl<E> PeerState<E> {
             self.peer.public_key,
         )?;
         self.initiator = Some(initiator);
+        self.initiated_at = Some(now);
+        self.retry_jitter = retry_jitter();
         self.next_initiation = Some(now + REKEY_TIMEOUT);
         self.outgoing_packets.push_back(packet);
         Ok(())
     }
 
+    fn destroy_initiator(&mut self) {
+        self.initiator = None;
+        self.next_initiation = None;
+        self.outgoing_packets.clear();
+    }
+
+    fn new_session(&mut self, session: SessionState) {
+        self.session = Some(session);
+        self.initiated_at = None;
+    }
+
     fn destroy_session(&mut self) {
         self.session = None;
         self.outgoing_packets.clear();
+    }
+
+    fn initiation_retry_timer(&self) -> Option<Instant> {
+        self.initiator.as_ref()?;
+        self.initiated_at
+            .map(|t| t + REKEY_TIMEOUT + Duration::from_millis(self.retry_jitter))
+    }
+
+    fn initiation_stop_timer(&self) -> Option<Instant> {
+        self.initiator.as_ref()?;
+        self.initiated_at.map(|t| t + REKEY_ATTEMPT_TIME)
+    }
+
+    fn no_receive_timer(&self) -> Option<Instant> {
+        self.initiator.as_ref()?;
+        let no_receive = match (self.last_sent, self.last_received) {
+            (Some(_), None) => true,
+            (Some(last_sent), Some(last_received)) if last_received < last_sent => true,
+            // TODO do we need this? should never happen...
+            (Some(last_sent), Some(last_received))
+                if last_sent + KEEPALIVE_TIMEOUT + REKEY_TIMEOUT < last_received =>
+            {
+                true
+            }
+            _ => false,
+        };
+        if no_receive {
+            self.last_sent
+                .map(|t| t + KEEPALIVE_TIMEOUT + REKEY_TIMEOUT)
+        } else {
+            None
+        }
+    }
+
+    fn no_send_timer(&self) -> Option<Instant> {
+        self.initiator.as_ref()?;
+        let no_send = match (self.last_sent, self.last_received) {
+            (None, Some(_)) => true,
+            (Some(last_sent), Some(last_received)) if last_sent < last_received => true,
+            // TODO do we need this? should never happen...
+            (Some(last_sent), Some(last_received))
+                if last_received + KEEPALIVE_TIMEOUT < last_sent =>
+            {
+                true
+            }
+            _ => false,
+        };
+        if no_send {
+            self.last_received.map(|t| t + KEEPALIVE_TIMEOUT)
+        } else {
+            None
+        }
+    }
+
+    fn session_ttl_timer(&self) -> Option<Instant> {
+        self.session.as_ref().map(|session| session.ttl_timer())
+    }
+
+    fn new_handshake_on_send_timer(&self) -> Option<Instant> {
+        self.session
+            .as_ref()
+            .and_then(|session| session.new_handshake_on_send_timer())
+    }
+
+    fn new_handshake_on_receive_timer(&self) -> Option<Instant> {
+        self.session
+            .as_ref()
+            .and_then(|session| session.new_handshake_on_receive_timer())
+    }
+
+    fn packet_drop_timer(&self) -> Option<Instant> {
+        self.session
+            .as_ref()
+            .map(|session| session.packet_drop_timer())
+    }
+
+    fn persistent_keepalive_timer(&self) -> Option<Instant> {
+        if self.session.is_some() {
+            if self.peer.persistent_keepalive != Duration::ZERO {
+                self.last_sent.map(|t| t + self.peer.persistent_keepalive)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn last_sent_guard(&mut self, now: Instant) -> LastSentGuard<E> {
+        LastSentGuard {
+            old_num_queued_packets: self.num_queued_packets(),
+            now,
+            state: self,
+        }
+    }
+
+    fn num_queued_packets(&self) -> usize {
+        self.outgoing_packets.len() + self.outgoing_data_packets.len()
+    }
+
+    fn flush<S: Sink<E>>(
+        &mut self,
+        sink: &mut S,
+        public_key: &PublicKey,
+    ) -> Result<(), std::io::Error> {
+        let endpoint = match self.peer.endpoint.as_ref() {
+            Some(endpoint) => endpoint,
+            None => {
+                return Ok(());
+            }
+        };
+        // send handshake messages
+        while let Some(packet) = self.outgoing_packets.front() {
+            sink.send(packet.as_slice(), endpoint)?;
+            self.outgoing_packets.pop_front();
+        }
+        // send data messages
+        if let Some(session) = self.session.as_mut() {
+            while let Some(data) = self.outgoing_data_packets.front() {
+                let message = session.session.send(data.as_slice())?;
+                let mut packet = Vec::with_capacity(message.len());
+                message.encode_with_context(&mut packet, session.session.context(public_key));
+                sink.send(packet.as_slice(), endpoint)?;
+                self.outgoing_data_packets.pop_front();
+            }
+        }
+        Ok(())
+    }
+}
+
+fn retry_jitter() -> u64 {
+    OsRng.gen_range(0_u64..334_u64)
+}
+
+struct LastSentGuard<'a, E> {
+    state: &'a mut PeerState<E>,
+    old_num_queued_packets: usize,
+    now: Instant,
+}
+
+impl<E> Deref for LastSentGuard<'_, E> {
+    type Target = PeerState<E>;
+
+    fn deref(&self) -> &Self::Target {
+        self.state
+    }
+}
+
+impl<E> DerefMut for LastSentGuard<'_, E> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.state
+    }
+}
+
+impl<E> Drop for LastSentGuard<'_, E> {
+    fn drop(&mut self) {
+        if self.state.num_queued_packets() != self.old_num_queued_packets {
+            self.last_sent = Some(self.now);
+        }
     }
 }
 
@@ -506,7 +680,7 @@ impl SessionState {
         }
     }
 
-    fn ttl(&self) -> Instant {
+    fn ttl_timer(&self) -> Instant {
         self.created_at + REJECT_AFTER_TIME * 3
     }
 }
@@ -517,7 +691,7 @@ struct Limit {
 }
 
 impl Limit {
-    fn is_reached(&self) -> bool {
+    fn reached(&self) -> bool {
         self.counter > self.limit
     }
 
@@ -532,11 +706,11 @@ impl Limit {
 }
 
 // from the original Wireguard paper
-const REKEY_AFTER_MESSAGES: u64 = 2_u64.pow(60);
-const REJECT_AFTER_MESSAGES: u64 = u64::MAX - 2_u64.pow(13);
 const REKEY_AFTER_TIME: Duration = Duration::from_secs(120);
+const REKEY_AFTER_MESSAGES: u64 = 2_u64.pow(60);
 const REJECT_AFTER_TIME: Duration = Duration::from_secs(180);
-const _REKEY_ATTEMPT_TIME: Duration = Duration::from_secs(90);
+const REJECT_AFTER_MESSAGES: u64 = u64::MAX - 2_u64.pow(13);
+const REKEY_ATTEMPT_TIME: Duration = Duration::from_secs(90);
 const REKEY_TIMEOUT: Duration = Duration::from_secs(5);
 const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
 const _COOKIE_TTL: Duration = Duration::from_secs(120);
@@ -563,7 +737,7 @@ mod tests {
             vec![Peer {
                 public_key: child_public_key,
                 preshared_key: preshared_key.clone(),
-                _persistent_keepalive: Duration::ZERO,
+                persistent_keepalive: Duration::ZERO,
                 endpoint: None,
             }],
             "parent",
@@ -573,7 +747,7 @@ mod tests {
             vec![Peer {
                 public_key: parent_public_key,
                 preshared_key: preshared_key.clone(),
-                _persistent_keepalive: Duration::ZERO,
+                persistent_keepalive: Duration::ZERO,
                 endpoint: Some(()),
             }],
             "child",
@@ -586,6 +760,7 @@ mod tests {
             .send(expected_data.to_vec(), &parent.public_key)
             .unwrap();
         child.flush(&mut child_outgoing_packets).unwrap();
+        eprintln!("{:?}", child);
         parent.advance(Instant::now()).unwrap();
         parent.fill(&mut child_outgoing_packets).unwrap();
         assert_eq!(None, parent.receive().unwrap());
