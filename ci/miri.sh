@@ -2,5 +2,5 @@
 
 . ./ci/preamble.sh
 
-cargo +nightly miri setup
+cargo +nightly --quiet miri setup
 env MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri test

@@ -27,6 +27,7 @@ use crate::Session;
 use crate::SessionIndex;
 use crate::Sink;
 use crate::Source;
+use crate::Timestamp;
 
 /// Wireguard protocol state machine.
 pub struct Node<E = ()> {
@@ -62,6 +63,7 @@ impl<E: Clone + Hash + Eq> Node<E> {
                 peer,
                 session: None,
                 initiator: None,
+                max_received_timestamp: None,
                 outgoing_packets: Default::default(),
                 outgoing_data_packets: Default::default(),
                 last_sent: None,
@@ -243,6 +245,7 @@ impl<E: Clone + Hash + Eq> Node<E> {
                     }
                 };
                 let peer = &mut self.peers[i];
+                peer.validate_timestamp(message.timestamp)?;
                 if peer.peer.endpoint.is_none() {
                     peer.peer.endpoint = Some(endpoint);
                 }
@@ -433,6 +436,7 @@ struct PeerState<E> {
     peer: Peer<E>,
     session: Option<SessionState>,
     initiator: Option<Initiator>,
+    max_received_timestamp: Option<Timestamp>,
     // encoded handshakes
     outgoing_packets: VecDeque<Vec<u8>>,
     // unencoded data
@@ -606,6 +610,21 @@ impl<E> PeerState<E> {
                 message.encode_with_context(&mut packet, session.session.context(public_key));
                 sink.send(packet.as_slice(), endpoint)?;
                 self.outgoing_data_packets.pop_front();
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_timestamp(&mut self, timestamp: Timestamp) -> Result<(), Error> {
+        match self.max_received_timestamp.as_mut() {
+            Some(max_received_timestamp) => {
+                if timestamp < *max_received_timestamp {
+                    return Err(Error);
+                }
+                *max_received_timestamp = timestamp;
+            }
+            None => {
+                self.max_received_timestamp = Some(timestamp);
             }
         }
         Ok(())

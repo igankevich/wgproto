@@ -176,8 +176,6 @@ pub struct Responder {
     static_public: PublicKey,
     other_static_public: Option<PublicKey>,
     // TODO
-    max_received_timestamp: Option<Timestamp>,
-    // TODO
     pub last_sent_cookie: Option<Cookie>,
     last_received_cookie: Option<Cookie>,
 }
@@ -205,7 +203,6 @@ impl Responder {
             other_static_public: None,
             last_sent_cookie: Default::default(),
             last_received_cookie: Default::default(),
-            max_received_timestamp: Default::default(),
         };
         let initiation = responder.on_handshake_initiation(initiation)?;
         Ok((responder, initiation))
@@ -259,17 +256,6 @@ impl Responder {
             .as_slice()
             .try_into()
             .map_err(Error::map)?;
-        match self.max_received_timestamp.as_mut() {
-            Some(max_received_timestamp) => {
-                if timestamp < *max_received_timestamp {
-                    return Err(Error);
-                }
-                *max_received_timestamp = timestamp;
-            }
-            None => {
-                self.max_received_timestamp = Some(timestamp);
-            }
-        }
         self.hash = blake2s_add(self.hash, &initiation.encrypted_timestamp);
         self.other_static_public = Some(decrypted_static);
         Ok(HandshakeInitiation {
@@ -415,11 +401,20 @@ fn derive_keys(chaining_key: &ChainingKey) -> Result<(Key, Key), Error> {
 pub struct Context<'a> {
     pub static_public: &'a PublicKey,
     pub cookie: Option<&'a Cookie>,
-    pub under_load: bool,
     pub mac2_is_valid: Option<bool>,
+    pub under_load: bool,
 }
 
-impl Context<'_> {
+impl<'a> Context<'a> {
+    pub fn new(static_public: &'a PublicKey) -> Self {
+        Self {
+            static_public,
+            cookie: None,
+            mac2_is_valid: None,
+            under_load: false,
+        }
+    }
+
     pub fn sign(&self, buffer: &mut Vec<u8>) {
         let mac1 = keyed_blake2s(
             &blake2s_add(LABEL_MAC1, self.static_public),
