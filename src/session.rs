@@ -176,8 +176,6 @@ pub struct Responder {
     static_public: PublicKey,
     other_static_public: Option<PublicKey>,
     // TODO
-    max_received_timestamp: Option<Timestamp>,
-    // TODO
     pub last_sent_cookie: Option<Cookie>,
     last_received_cookie: Option<Cookie>,
 }
@@ -205,7 +203,6 @@ impl Responder {
             other_static_public: None,
             last_sent_cookie: Default::default(),
             last_received_cookie: Default::default(),
-            max_received_timestamp: Default::default(),
         };
         let initiation = responder.on_handshake_initiation(initiation)?;
         Ok((responder, initiation))
@@ -259,17 +256,6 @@ impl Responder {
             .as_slice()
             .try_into()
             .map_err(Error::map)?;
-        match self.max_received_timestamp.as_mut() {
-            Some(max_received_timestamp) => {
-                if timestamp < *max_received_timestamp {
-                    return Err(Error);
-                }
-                *max_received_timestamp = timestamp;
-            }
-            None => {
-                self.max_received_timestamp = Some(timestamp);
-            }
-        }
         self.hash = blake2s_add(self.hash, &initiation.encrypted_timestamp);
         self.other_static_public = Some(decrypted_static);
         Ok(HandshakeInitiation {
@@ -415,11 +401,20 @@ fn derive_keys(chaining_key: &ChainingKey) -> Result<(Key, Key), Error> {
 pub struct Context<'a> {
     pub static_public: &'a PublicKey,
     pub cookie: Option<&'a Cookie>,
-    pub under_load: bool,
     pub mac2_is_valid: Option<bool>,
+    pub under_load: bool,
 }
 
-impl Context<'_> {
+impl<'a> Context<'a> {
+    pub fn new(static_public: &'a PublicKey) -> Self {
+        Self {
+            static_public,
+            cookie: None,
+            mac2_is_valid: None,
+            under_load: false,
+        }
+    }
+
     pub fn sign(&self, buffer: &mut Vec<u8>) {
         let mac1 = keyed_blake2s(
             &blake2s_add(LABEL_MAC1, self.static_public),
@@ -508,7 +503,7 @@ fn hmac_blake2s_add(
     digest.into()
 }
 
-fn keyed_blake2s(key: &[u8; 32], input: impl AsRef<[u8]>) -> [u8; 16] {
+fn keyed_blake2s(key: &U8_32, input: impl AsRef<[u8]>) -> U8_16 {
     use blake2::digest::Mac;
     let mut hasher = Blake2sMac::new(key.into());
     hasher.update(input.as_ref());
@@ -516,7 +511,7 @@ fn keyed_blake2s(key: &[u8; 32], input: impl AsRef<[u8]>) -> [u8; 16] {
 }
 
 fn aead_encrypt(
-    key: &[u8; 32],
+    key: &U8_32,
     counter: u64,
     plain_text: impl AsRef<[u8]>,
     auth_text: impl AsRef<[u8]>,
@@ -533,7 +528,7 @@ fn aead_encrypt(
 }
 
 fn aead_decrypt(
-    key: &[u8; 32],
+    key: &U8_32,
     counter: u64,
     cipher_text: impl AsRef<[u8]>,
     auth_text: impl AsRef<[u8]>,
@@ -553,6 +548,7 @@ type ChainingKey = SecretData;
 type SessionHash = [u8; HASH_LEN];
 type Key = SecretData;
 type HmacBlake2s = SimpleHmac<Blake2s256>;
+type U8_16 = [u8; 16];
 
 const HASH_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
@@ -572,6 +568,8 @@ mod tests {
     use crate::DecodeWithContext;
     use crate::Message;
     use crate::MessageType;
+    use arbitrary::Arbitrary;
+    use arbtest::arbtest;
 
     #[test]
     fn encode_decode_handshake_initiation_wg() {
@@ -732,6 +730,20 @@ mod tests {
         };
         assert!(packet_data.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn aead_encrypt_decrypt_symmetry() {
+        arbtest(|u| {
+            let key: U8_32 = Arbitrary::arbitrary(u)?;
+            let counter: u64 = Arbitrary::arbitrary(u)?;
+            let plain_text: Vec<u8> = Arbitrary::arbitrary(u)?;
+            let auth_text: Vec<u8> = Arbitrary::arbitrary(u)?;
+            let cipher_text = aead_encrypt(&key, counter, &plain_text, &auth_text).unwrap();
+            let actual_text = aead_decrypt(&key, counter, cipher_text, &auth_text).unwrap();
+            assert_eq!(plain_text, actual_text);
+            Ok(())
+        });
     }
 
     // a real packet from wg in-kernel implementation
