@@ -567,6 +567,8 @@ mod tests {
     use crate::DecodeWithContext;
     use crate::Message;
     use crate::MessageType;
+    use arbitrary::Arbitrary;
+    use arbtest::arbtest;
 
     #[test]
     fn encode_decode_handshake_initiation_wg() {
@@ -727,6 +729,20 @@ mod tests {
         };
         assert!(packet_data.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn aead_encrypt_decrypt_symmetry() {
+        arbtest(|u| {
+            let key: [u8; 32] = Arbitrary::arbitrary(u)?;
+            let counter: u64 = Arbitrary::arbitrary(u)?;
+            let plain_text: Vec<u8> = Arbitrary::arbitrary(u)?;
+            let auth_text: Vec<u8> = Arbitrary::arbitrary(u)?;
+            let cipher_text = aead_encrypt(&key, counter, &plain_text, &auth_text).unwrap();
+            let actual_text = aead_decrypt(&key, counter, cipher_text, &auth_text).unwrap();
+            assert_eq!(plain_text, actual_text);
+            Ok(())
+        });
     }
 
     // a real packet from wg in-kernel implementation
