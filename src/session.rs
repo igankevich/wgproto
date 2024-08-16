@@ -503,7 +503,7 @@ fn hmac_blake2s_add(
     digest.into()
 }
 
-fn keyed_blake2s(key: &[u8; 32], input: impl AsRef<[u8]>) -> [u8; 16] {
+fn keyed_blake2s(key: &U8_32, input: impl AsRef<[u8]>) -> U8_16 {
     use blake2::digest::Mac;
     let mut hasher = Blake2sMac::new(key.into());
     hasher.update(input.as_ref());
@@ -511,7 +511,7 @@ fn keyed_blake2s(key: &[u8; 32], input: impl AsRef<[u8]>) -> [u8; 16] {
 }
 
 fn aead_encrypt(
-    key: &[u8; 32],
+    key: &U8_32,
     counter: u64,
     plain_text: impl AsRef<[u8]>,
     auth_text: impl AsRef<[u8]>,
@@ -528,7 +528,7 @@ fn aead_encrypt(
 }
 
 fn aead_decrypt(
-    key: &[u8; 32],
+    key: &U8_32,
     counter: u64,
     cipher_text: impl AsRef<[u8]>,
     auth_text: impl AsRef<[u8]>,
@@ -548,6 +548,7 @@ type ChainingKey = SecretData;
 type SessionHash = [u8; HASH_LEN];
 type Key = SecretData;
 type HmacBlake2s = SimpleHmac<Blake2s256>;
+type U8_16 = [u8; 16];
 
 const HASH_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
@@ -734,7 +735,7 @@ mod tests {
     #[test]
     fn aead_encrypt_decrypt_symmetry() {
         arbtest(|u| {
-            let key: [u8; 32] = Arbitrary::arbitrary(u)?;
+            let key: U8_32 = Arbitrary::arbitrary(u)?;
             let counter: u64 = Arbitrary::arbitrary(u)?;
             let plain_text: Vec<u8> = Arbitrary::arbitrary(u)?;
             let auth_text: Vec<u8> = Arbitrary::arbitrary(u)?;
