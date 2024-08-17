@@ -44,6 +44,7 @@ pub struct Initiator {
 
 impl Initiator {
     pub fn new(
+        sender_index: SessionIndex,
         static_public: PublicKey,
         static_private: PrivateKey,
         static_preshared: PresharedKey,
@@ -52,7 +53,7 @@ impl Initiator {
         let ephemeral_private = PrivateKey::random();
         let ephemeral_public: PublicKey = (&ephemeral_private).into();
         let mut session = Self {
-            sender_index: Default::default(),
+            sender_index,
             chaining_key: Default::default(),
             hash: Default::default(),
             ephemeral_private,
@@ -665,6 +666,7 @@ mod tests {
         let responder_static_public: PublicKey = (&responder_static_secret).into();
         let static_preshared = PresharedKey::random();
         let (initiator, initiation_bytes) = Initiator::new(
+            Default::default(),
             initiator_static_public,
             initiator_static_secret,
             static_preshared.clone(),

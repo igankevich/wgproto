@@ -23,6 +23,10 @@ impl SessionIndex {
             number: OsRng.next_u32(),
         }
     }
+
+    pub fn as_u32(&self) -> u32 {
+        self.number
+    }
 }
 
 impl Default for SessionIndex {
@@ -54,6 +58,18 @@ impl Display for SessionIndex {
 impl Debug for SessionIndex {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         Debug::fmt(&self.number, f)
+    }
+}
+
+impl From<SessionIndex> for u32 {
+    fn from(other: SessionIndex) -> u32 {
+        other.number
+    }
+}
+
+impl From<u32> for SessionIndex {
+    fn from(number: u32) -> Self {
+        Self { number }
     }
 }
 
