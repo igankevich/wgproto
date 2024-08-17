@@ -92,7 +92,7 @@ impl<E: Clone + Hash + Eq> Node<E> {
 
     pub fn advance(&mut self, now: Instant) -> Result<(), Error> {
         self.now = now;
-        for state in self.peers.iter_mut() {
+        for (i, state) in self.peers.iter_mut().enumerate() {
             if state.session_ttl_timer().expired(self.now, false) {
                 state.destroy_session();
             }
@@ -102,7 +102,13 @@ impl<E: Clone + Hash + Eq> Node<E> {
             if state.initiation_retry_timer().expired(self.now, false)
                 || state.no_receive_timer().expired(self.now, false)
             {
-                state.new_initiator(self.public_key, self.private_key.clone(), self.now)?;
+                state.new_initiator(
+                    self.public_key,
+                    self.private_key.clone(),
+                    self.now,
+                    &mut self.session_index_to_peer,
+                    i,
+                )?;
             }
             if state.no_send_timer().expired(self.now, false) {
                 if let Some(session) = state.session.as_mut() {
@@ -161,11 +167,23 @@ impl<E: Clone + Hash + Eq> Node<E> {
                         .expired(self.now, false)
                 {
                     state.session = None;
-                    state.new_initiator(self.public_key, self.private_key.clone(), self.now)?;
+                    state.new_initiator(
+                        self.public_key,
+                        self.private_key.clone(),
+                        self.now,
+                        &mut self.session_index_to_peer,
+                        *i,
+                    )?;
                 }
             }
             None => {
-                state.new_initiator(self.public_key, self.private_key.clone(), self.now)?;
+                state.new_initiator(
+                    self.public_key,
+                    self.private_key.clone(),
+                    self.now,
+                    &mut self.session_index_to_peer,
+                    *i,
+                )?;
             }
         };
         Ok(())
@@ -319,7 +337,13 @@ impl<E: Clone + Hash + Eq> Node<E> {
                             .new_handshake_on_receive_timer()
                             .expired(self.now, false)
                     {
-                        peer.new_initiator(self.public_key, self.private_key.clone(), self.now)?;
+                        peer.new_initiator(
+                            self.public_key,
+                            self.private_key.clone(),
+                            self.now,
+                            &mut self.session_index_to_peer,
+                            i,
+                        )?;
                     }
                     ret
                 } else {
@@ -454,11 +478,22 @@ impl<E> PeerState<E> {
         public_key: PublicKey,
         private_key: PrivateKey,
         now: Instant,
+        session_index_to_peer: &mut HashMap<SessionIndex, usize>,
+        peer_index: usize,
     ) -> Result<(), Error> {
+        use std::collections::hash_map::Entry;
         if self.initiator.is_some() || !self.next_initiation.expired(now, true) {
             return Ok(());
         }
+        let session_index = loop {
+            let session_index = SessionIndex::new();
+            if let Entry::Vacant(v) = session_index_to_peer.entry(session_index) {
+                v.insert(peer_index);
+                break session_index;
+            }
+        };
         let (initiator, packet) = Initiator::new(
+            session_index,
             public_key,
             private_key,
             self.peer.preshared_key.clone(),
