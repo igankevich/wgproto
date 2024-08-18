@@ -19,6 +19,8 @@ use crate::Error;
 use crate::HandshakeInitiation;
 use crate::InputBuffer;
 use crate::Message;
+use crate::MessageSigner;
+use crate::MessageVerifier;
 use crate::PresharedKey;
 use crate::PrivateKey;
 use crate::PublicKey;
@@ -112,14 +114,9 @@ impl Initiator {
             encrypted_timestamp,
         });
         let mut buffer = Vec::with_capacity(HANDSHAKE_INITIATION_LEN);
-        let context = Context {
-            static_public: &responder_static_public,
-            cookie: self.last_received_cookie.as_ref(),
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
-        message.encode_with_context(&mut buffer, context);
+        let mut signer =
+            MacSigner::new(&responder_static_public, self.last_received_cookie.as_ref());
+        message.encode_with_context(&mut buffer, &mut signer);
         Ok(buffer)
     }
 
@@ -304,14 +301,11 @@ impl Responder {
             encrypted_nothing,
         });
         let mut buffer = Vec::with_capacity(HANDSHAKE_RESPONSE_LEN);
-        let context = Context {
-            static_public: &initiation.static_public,
-            cookie: self.last_received_cookie.as_ref(),
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
-        message.encode_with_context(&mut buffer, context);
+        let mut signer = MacSigner::new(
+            &initiation.static_public,
+            self.last_received_cookie.as_ref(),
+        );
+        message.encode_with_context(&mut buffer, &mut signer);
         let (temp2, temp3) = derive_keys(&self.chaining_key)?;
         let session = Session {
             sender_index: self.sender_index,
@@ -382,16 +376,6 @@ impl Session {
     pub fn receiving_key_counter(&self) -> Counter {
         self.receiving_key_counter
     }
-
-    pub fn context<'a>(&self, static_public: &'a PublicKey) -> Context<'a> {
-        Context {
-            static_public,
-            cookie: None,
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        }
-    }
 }
 
 fn derive_keys(chaining_key: &ChainingKey) -> Result<(Key, Key), Error> {
@@ -402,7 +386,7 @@ fn derive_keys(chaining_key: &ChainingKey) -> Result<(Key, Key), Error> {
 }
 
 #[derive(Clone, Copy)]
-pub struct Context<'a> {
+pub struct MacVerifier<'a> {
     pub static_public: &'a PublicKey,
     pub cookie: Option<&'a Cookie>,
     pub mac2_is_valid: Option<bool>,
@@ -410,31 +394,20 @@ pub struct Context<'a> {
     pub check_macs: bool,
 }
 
-impl<'a> Context<'a> {
-    pub fn new(static_public: &'a PublicKey) -> Self {
+impl<'a> MacVerifier<'a> {
+    pub fn new(static_public: &'a PublicKey, cookie: Option<&'a Cookie>) -> Self {
         Self {
             static_public,
-            cookie: None,
+            cookie,
             mac2_is_valid: None,
             under_load: false,
             check_macs: true,
         }
     }
+}
 
-    pub fn sign(&self, buffer: &mut Vec<u8>) {
-        let mac1 = keyed_blake2s(
-            &blake2s_add(LABEL_MAC1, self.static_public),
-            buffer.as_slice(),
-        );
-        mac1.encode(buffer);
-        let mac2 = match self.cookie {
-            Some(cookie) => keyed_blake2s(cookie.as_ref(), buffer.as_slice()),
-            None => Default::default(),
-        };
-        mac2.encode(buffer);
-    }
-
-    pub fn verify(&mut self, buffer: &mut InputBuffer) -> Result<(), Error> {
+impl MessageVerifier for MacVerifier<'_> {
+    fn verify(&mut self, buffer: &mut InputBuffer) -> Result<(), Error> {
         if !self.check_macs {
             return Ok(());
         }
@@ -468,6 +441,36 @@ impl<'a> Context<'a> {
             return Err(Error);
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct MacSigner<'a> {
+    pub static_public: &'a PublicKey,
+    pub cookie: Option<&'a Cookie>,
+}
+
+impl<'a> MacSigner<'a> {
+    pub fn new(static_public: &'a PublicKey, cookie: Option<&'a Cookie>) -> Self {
+        Self {
+            static_public,
+            cookie,
+        }
+    }
+}
+
+impl MessageSigner for MacSigner<'_> {
+    fn sign(&mut self, buffer: &mut Vec<u8>) {
+        let mac1 = keyed_blake2s(
+            &blake2s_add(LABEL_MAC1, self.static_public),
+            buffer.as_slice(),
+        );
+        mac1.encode(buffer);
+        let mac2 = match self.cookie {
+            Some(cookie) => keyed_blake2s(cookie.as_ref(), buffer.as_slice()),
+            None => Default::default(),
+        };
+        mac2.encode(buffer);
     }
 }
 
@@ -573,41 +576,30 @@ pub(crate) const MAC_LEN: usize = 16;
 #[cfg(test)]
 mod tests {
 
+    use arbitrary::Arbitrary;
+    use arbtest::arbtest;
+
     use super::*;
     use crate::DecodeWithContext;
     use crate::Message;
     use crate::MessageKind;
-    use arbitrary::Arbitrary;
-    use arbtest::arbtest;
 
     #[test]
     fn encode_decode_handshake_initiation_wg() {
         let bytes = VALID_HANDSHAKE_INITIATION;
         let responder_static_public: PublicKey = RESPONDER_STATIC_PUBLIC.into();
-        let mut context = Context {
-            static_public: &responder_static_public,
-            cookie: None,
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
+        let mut verifier = MacVerifier::new(&responder_static_public, None);
         for n in 0..(bytes.len() - 1) {
             let mut buffer = InputBuffer::new(&bytes[..n]);
-            assert!(Message::decode_with_context(&mut buffer, &mut context).is_err());
+            assert!(Message::decode_with_context(&mut buffer, &mut verifier).is_err());
         }
         let mut buffer = InputBuffer::new(bytes.as_slice());
-        let message = Message::decode_with_context(&mut buffer, &mut context).unwrap();
+        let message = Message::decode_with_context(&mut buffer, &mut verifier).unwrap();
         assert_eq!(MessageKind::HandshakeInitiation, message.kind());
         assert!(buffer.is_empty());
         let mut buffer = Vec::new();
-        let context = Context {
-            static_public: &responder_static_public,
-            cookie: None,
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
-        message.encode_with_context(&mut buffer, context);
+        let mut signer = MacSigner::new(&responder_static_public, None);
+        message.encode_with_context(&mut buffer, &mut signer);
         assert_eq!(bytes.as_slice(), buffer.as_slice());
     }
 
@@ -615,30 +607,18 @@ mod tests {
     fn encode_decode_handshake_response_wg() {
         let bytes = VALID_HANDSHAKE_RESPONSE;
         let initiator_static_public: PublicKey = INITIATOR_STATIC_PUBLIC.into();
-        let mut context = Context {
-            static_public: &initiator_static_public,
-            cookie: None,
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
+        let mut verifier = MacVerifier::new(&initiator_static_public, None);
         for n in 0..(bytes.len() - 1) {
             let mut buffer = InputBuffer::new(&bytes[..n]);
-            assert!(Message::decode_with_context(&mut buffer, &mut context).is_err());
+            assert!(Message::decode_with_context(&mut buffer, &mut verifier).is_err());
         }
         let mut buffer = InputBuffer::new(bytes.as_slice());
-        let message = Message::decode_with_context(&mut buffer, &mut context).unwrap();
+        let message = Message::decode_with_context(&mut buffer, &mut verifier).unwrap();
         assert_eq!(MessageKind::HandshakeResponse, message.kind());
         assert!(buffer.is_empty());
         let mut buffer = Vec::new();
-        let context = Context {
-            static_public: &initiator_static_public,
-            cookie: None,
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
-        message.encode_with_context(&mut buffer, context);
+        let mut signer = MacSigner::new(&initiator_static_public, None);
+        message.encode_with_context(&mut buffer, &mut signer);
         assert_eq!(bytes.as_slice(), buffer.as_slice());
     }
 
@@ -649,15 +629,9 @@ mod tests {
         let responder_static_secret: PrivateKey = RESPONDER_STATIC_SECRET.into();
         let static_preshared: PresharedKey = [0_u8; PUBLIC_KEY_LEN].into();
         let bytes = VALID_HANDSHAKE_INITIATION;
-        let mut context = Context {
-            static_public: &responder_static_public,
-            cookie: None,
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
+        let mut verifier = MacVerifier::new(&responder_static_public, None);
         let mut buffer = InputBuffer::new(bytes.as_slice());
-        let message = Message::decode_with_context(&mut buffer, &mut context)?;
+        let message = Message::decode_with_context(&mut buffer, &mut verifier)?;
         let (_responder, initiation, _) = match message {
             Message::HandshakeInitiation(message) => Responder::respond(
                 responder_static_public,
@@ -685,15 +659,9 @@ mod tests {
             static_preshared.clone(),
             responder_static_public,
         )?;
-        let mut context = Context {
-            static_public: &responder_static_public,
-            cookie: None,
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
+        let mut verifier = MacVerifier::new(&responder_static_public, None);
         let mut buffer = InputBuffer::new(initiation_bytes.as_slice());
-        let message = Message::decode_with_context(&mut buffer, &mut context)?;
+        let message = Message::decode_with_context(&mut buffer, &mut verifier)?;
         assert_eq!(MessageKind::HandshakeInitiation, message.kind());
         assert!(buffer.is_empty());
         let (mut responder, initiation, response_bytes) = match message {
@@ -706,15 +674,9 @@ mod tests {
             _ => return Err(Error),
         };
         assert_eq!(initiator_static_public, initiation.static_public);
-        let mut context = Context {
-            static_public: &initiator_static_public,
-            cookie: None,
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
+        let mut verifier = MacVerifier::new(&initiator_static_public, None);
         let mut buffer = InputBuffer::new(response_bytes.as_slice());
-        let message = Message::decode_with_context(&mut buffer, &mut context)?;
+        let message = Message::decode_with_context(&mut buffer, &mut verifier)?;
         assert_eq!(MessageKind::HandshakeResponse, message.kind());
         assert!(buffer.is_empty());
         let mut session = match message {
@@ -724,23 +686,11 @@ mod tests {
         // keep alive
         let message = session.send(&[])?;
         let mut buffer = Vec::new();
-        let context = Context {
-            static_public: &initiator_static_public,
-            cookie: None,
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
-        message.encode_with_context(&mut buffer, context);
-        let mut context = Context {
-            static_public: &initiator_static_public,
-            cookie: None,
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
+        let mut signer = MacSigner::new(&initiator_static_public, None);
+        message.encode_with_context(&mut buffer, &mut signer);
+        let mut verifier = MacVerifier::new(&initiator_static_public, None);
         let mut buffer = InputBuffer::new(buffer.as_slice());
-        let message = Message::decode_with_context(&mut buffer, &mut context)?;
+        let message = Message::decode_with_context(&mut buffer, &mut verifier)?;
         assert_eq!(MessageKind::PacketData, message.kind());
         assert!(buffer.is_empty());
         let packet_data = match message {

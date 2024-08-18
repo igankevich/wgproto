@@ -10,13 +10,14 @@ use rand::Rng;
 use rand_core::OsRng;
 use static_assertions::const_assert;
 
-use crate::Context;
 use crate::Cookie;
 use crate::DecodeWithContext;
 use crate::EncodeWithContext;
 use crate::Error;
 use crate::Initiator;
 use crate::InputBuffer;
+use crate::MacSigner;
+use crate::MacVerifier;
 use crate::Message;
 use crate::PresharedKey;
 use crate::PrivateKey;
@@ -245,7 +246,7 @@ impl<E> Node<E> {
         buffer: &mut InputBuffer,
         endpoint: E,
     ) -> Result<Option<(Vec<u8>, PublicKey)>, Error> {
-        let mut context = Context {
+        let mut verifier = MacVerifier {
             static_public: &self.public_key,
             // TODO last sent cookie?
             cookie: self.cookie.as_ref(),
@@ -253,8 +254,8 @@ impl<E> Node<E> {
             mac2_is_valid: None,
             check_macs: true,
         };
-        let message = Message::decode_with_context(buffer, &mut context)?;
-        if let Some(false) = context.mac2_is_valid {
+        let message = Message::decode_with_context(buffer, &mut verifier)?;
+        if let Some(false) = verifier.mac2_is_valid {
             // TODO send cookie
         }
         match message {
@@ -634,7 +635,8 @@ impl<E> PeerState<E> {
             while let Some(data) = self.outgoing_data_packets.front() {
                 let message = session.session.send(data.as_slice())?;
                 let mut packet = Vec::with_capacity(message.len());
-                message.encode_with_context(&mut packet, session.session.context(public_key));
+                let mut signer = MacSigner::new(public_key, None);
+                message.encode_with_context(&mut packet, &mut signer);
                 sink.send(packet.as_slice(), endpoint)?;
                 self.outgoing_data_packets.pop_front();
             }
