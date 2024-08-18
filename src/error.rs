@@ -29,3 +29,9 @@ impl From<Error> for std::io::Error {
         Self::new(std::io::ErrorKind::Other, "wgproto error")
     }
 }
+
+impl From<std::io::Error> for Error {
+    fn from(_other: std::io::Error) -> Self {
+        Self
+    }
+}

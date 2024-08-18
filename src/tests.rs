@@ -74,6 +74,7 @@ where
             cookie: cookie.as_ref(),
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         expected.encode_with_context(&mut buffer, context);
         let mut context = Context {
@@ -81,6 +82,7 @@ where
             cookie: cookie.as_ref(),
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         let mut buffer = InputBuffer::new(buffer.as_slice());
         let actual = T::decode_with_context(&mut buffer, &mut context).unwrap();

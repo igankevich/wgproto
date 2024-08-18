@@ -17,25 +17,25 @@ use crate::PUBLIC_KEY_LEN;
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 #[cfg_attr(test, derive(arbitrary::Arbitrary))]
 #[repr(u8)]
-pub enum MessageType {
+pub enum MessageKind {
     HandshakeInitiation = 1,
     HandshakeResponse = 2,
     PacketData = 4,
 }
 
-impl Decode for MessageType {
+impl Decode for MessageKind {
     fn decode(buffer: &mut InputBuffer) -> Result<Self, Error> {
         buffer.get_next(MESSAGE_TYPE_LEN).ok_or(Error)?[0].try_into()
     }
 }
 
-impl Encode for MessageType {
+impl Encode for MessageKind {
     fn encode(&self, buffer: &mut Vec<u8>) {
         buffer.extend_from_slice(&[*self as u8, 0, 0, 0]);
     }
 }
 
-impl TryFrom<u8> for MessageType {
+impl TryFrom<u8> for MessageKind {
     type Error = Error;
     fn try_from(other: u8) -> Result<Self, Self::Error> {
         match other {
@@ -55,11 +55,11 @@ pub enum Message {
 }
 
 impl Message {
-    pub fn get_type(&self) -> MessageType {
+    pub fn kind(&self) -> MessageKind {
         match self {
-            Message::HandshakeInitiation(..) => MessageType::HandshakeInitiation,
-            Message::HandshakeResponse(..) => MessageType::HandshakeResponse,
-            Message::PacketData(..) => MessageType::PacketData,
+            Message::HandshakeInitiation(..) => MessageKind::HandshakeInitiation,
+            Message::HandshakeResponse(..) => MessageKind::HandshakeResponse,
+            Message::PacketData(..) => MessageKind::PacketData,
         }
     }
 
@@ -75,17 +75,16 @@ impl Message {
 
 impl DecodeWithContext<&mut Context<'_>> for Message {
     fn decode_with_context(buffer: &mut InputBuffer, context: &mut Context) -> Result<Self, Error> {
-        let message_type = MessageType::decode(buffer)?;
-        let message = match message_type {
-            MessageType::HandshakeInitiation => {
+        let message = match MessageKind::decode(buffer)? {
+            MessageKind::HandshakeInitiation => {
                 let message = EncryptedHandshakeInitiation::decode_with_context(buffer, context)?;
                 Message::HandshakeInitiation(message)
             }
-            MessageType::HandshakeResponse => {
+            MessageKind::HandshakeResponse => {
                 let message = EncryptedHandshakeResponse::decode_with_context(buffer, context)?;
                 Message::HandshakeResponse(message)
             }
-            MessageType::PacketData => {
+            MessageKind::PacketData => {
                 let message = EncryptedPacketData::decode(buffer)?;
                 Message::PacketData(message)
             }
@@ -98,15 +97,15 @@ impl EncodeWithContext<Context<'_>> for Message {
     fn encode_with_context(&self, buffer: &mut Vec<u8>, context: Context) {
         match self {
             Message::HandshakeInitiation(message) => {
-                MessageType::HandshakeInitiation.encode(buffer);
+                MessageKind::HandshakeInitiation.encode(buffer);
                 message.encode_with_context(buffer, context);
             }
             Message::HandshakeResponse(message) => {
-                MessageType::HandshakeResponse.encode(buffer);
+                MessageKind::HandshakeResponse.encode(buffer);
                 message.encode_with_context(buffer, context);
             }
             Message::PacketData(message) => {
-                MessageType::PacketData.encode(buffer);
+                MessageKind::PacketData.encode(buffer);
                 message.encode(buffer);
             }
         }
@@ -299,7 +298,7 @@ mod tests {
 
     #[test]
     fn encode_decode() {
-        arbtest(encode_decode_symmetry::<MessageType>);
+        arbtest(encode_decode_symmetry::<MessageKind>);
         arbtest(encode_decode_symmetry::<EncryptedStatic>);
         arbtest(encode_decode_symmetry::<EncryptedTimestamp>);
         arbtest(encode_decode_symmetry::<EncryptedNothing>);

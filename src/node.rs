@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::hash::Hash;
 use std::mem::take;
 use std::ops::Deref;
 use std::ops::DerefMut;
@@ -36,29 +35,18 @@ pub struct Node<E = ()> {
     cookie: Option<Cookie>,
     peers: Vec<PeerState<E>>,
     public_key_to_peer: HashMap<PublicKey, usize>,
-    endpoint_to_peer: HashMap<E, usize>,
     session_index_to_peer: HashMap<SessionIndex, usize>,
     incoming_packets: VecDeque<(Vec<u8>, E)>,
     now: Instant,
     under_load: bool,
-    #[cfg(test)]
-    name: String,
 }
 
-impl<E: Clone + Hash + Eq> Node<E> {
-    pub fn new(
-        private_key: PrivateKey,
-        peers: Vec<Peer<E>>,
-        #[cfg(test)] name: impl ToString,
-    ) -> Self {
+impl<E> Node<E> {
+    pub fn new(private_key: PrivateKey, peers: Vec<Peer<E>>) -> Self {
         let mut new_peers: Vec<PeerState<E>> = Vec::with_capacity(peers.len());
         let mut public_key_to_peer = HashMap::new();
-        let mut endpoint_to_peer = HashMap::new();
         for peer in peers.into_iter() {
             public_key_to_peer.insert(peer.public_key, new_peers.len());
-            if let Some(endpoint) = peer.endpoint.as_ref() {
-                endpoint_to_peer.insert(endpoint.clone(), new_peers.len());
-            }
             new_peers.push(PeerState {
                 peer,
                 session: None,
@@ -80,13 +68,10 @@ impl<E: Clone + Hash + Eq> Node<E> {
             cookie: Default::default(),
             peers: new_peers,
             public_key_to_peer,
-            endpoint_to_peer,
             session_index_to_peer: Default::default(),
             incoming_packets: Default::default(),
             now: Instant::now(),
             under_load: false,
-            #[cfg(test)]
-            name: name.to_string(),
         }
     }
 
@@ -159,7 +144,7 @@ impl<E: Clone + Hash + Eq> Node<E> {
         let i = self.public_key_to_peer.get(destination).ok_or(Error)?;
         let state = &mut self.peers[*i];
         state.outgoing_data_packets.push_back(data);
-        match state.session.as_mut() {
+        let needs_handshake = match state.session.as_mut() {
             Some(session) => {
                 if session.new_handshake_on_send_limit().reached()
                     || session
@@ -167,26 +152,42 @@ impl<E: Clone + Hash + Eq> Node<E> {
                         .expired(self.now, false)
                 {
                     state.session = None;
-                    state.new_initiator(
-                        self.public_key,
-                        self.private_key.clone(),
-                        self.now,
-                        &mut self.session_index_to_peer,
-                        *i,
-                    )?;
+                    true
+                } else {
+                    false
                 }
             }
-            None => {
-                state.new_initiator(
-                    self.public_key,
-                    self.private_key.clone(),
-                    self.now,
-                    &mut self.session_index_to_peer,
-                    *i,
-                )?;
-            }
+            None => true,
         };
+        if needs_handshake {
+            state.new_initiator(
+                self.public_key,
+                self.private_key.clone(),
+                self.now,
+                &mut self.session_index_to_peer,
+                *i,
+            )?;
+        }
         Ok(())
+    }
+
+    pub fn send_receive_blocking<S1: Sink<E> + Source<E>>(
+        &mut self,
+        data: Vec<u8>,
+        destination: &PublicKey,
+        sink_and_source: &mut S1,
+    ) -> Result<(Vec<u8>, PublicKey), Error> {
+        self.advance(Instant::now())?;
+        self.send(data, destination)?;
+        self.flush(sink_and_source)?;
+        loop {
+            self.advance(Instant::now())?;
+            self.fill_buf_once(sink_and_source)?;
+            if let Some(reply) = self.receive()? {
+                return Ok(reply);
+            }
+            self.flush(sink_and_source)?;
+        }
     }
 
     pub fn flush<S: Sink<E>>(&mut self, sink: &mut S) -> Result<(), std::io::Error> {
@@ -197,12 +198,21 @@ impl<E: Clone + Hash + Eq> Node<E> {
         Ok(())
     }
 
-    pub fn fill<S: Source<E>>(&mut self, source: &mut S) -> Result<(), std::io::Error> {
+    pub fn fill_buf<S: Source<E>>(&mut self, source: &mut S) -> Result<(), std::io::Error> {
         while let Some((packet, endpoint)) = source.receive()? {
             if packet.is_empty() {
                 break;
             }
             self.incoming_packets.push_back((packet, endpoint));
+        }
+        Ok(())
+    }
+
+    pub fn fill_buf_once<S: Source<E>>(&mut self, source: &mut S) -> Result<(), std::io::Error> {
+        if let Some((packet, endpoint)) = source.receive()? {
+            if !packet.is_empty() {
+                self.incoming_packets.push_back((packet, endpoint));
+            }
         }
         Ok(())
     }
@@ -241,27 +251,20 @@ impl<E: Clone + Hash + Eq> Node<E> {
             cookie: self.cookie.as_ref(),
             under_load: self.under_load,
             mac2_is_valid: None,
+            check_macs: true,
         };
         let message = Message::decode_with_context(buffer, &mut context)?;
         if let Some(false) = context.mac2_is_valid {
             // TODO send cookie
         }
-        let i = self.endpoint_to_peer.get(&endpoint).copied();
         match message {
             Message::HandshakeInitiation(message) => {
                 let (mut responder, message) =
                     Responder::new(self.public_key, self.private_key.clone(), message)?;
-                let i = match i {
-                    Some(i) => i,
-                    None => {
-                        let i = *self
-                            .public_key_to_peer
-                            .get(&message.static_public)
-                            .ok_or(Error)?;
-                        self.endpoint_to_peer.insert(endpoint.clone(), i);
-                        i
-                    }
-                };
+                let i = *self
+                    .public_key_to_peer
+                    .get(&message.static_public)
+                    .ok_or(Error)?;
                 let peer = &mut self.peers[i];
                 peer.validate_timestamp(message.timestamp)?;
                 if peer.peer.endpoint.is_none() {
@@ -270,28 +273,21 @@ impl<E: Clone + Hash + Eq> Node<E> {
                 peer.last_received = Some(self.now);
                 let (session, outgoing_packet) =
                     responder.handshake_response(&message, &peer.peer.preshared_key)?;
-                let receiver_index = session.receiver_index();
+                let sender_index = session.sender_index();
                 peer.new_session(SessionState {
                     session,
                     created_at: self.now,
                     was_initiator: false,
                 });
                 peer.outgoing_packets.push_back(outgoing_packet);
-                self.session_index_to_peer.insert(receiver_index, i);
+                self.session_index_to_peer.insert(sender_index, i);
                 Ok(None)
             }
             Message::HandshakeResponse(message) => {
-                let i = match i {
-                    Some(i) => i,
-                    None => {
-                        let i = *self
-                            .session_index_to_peer
-                            .get(&message.receiver_index)
-                            .ok_or(Error)?;
-                        self.endpoint_to_peer.insert(endpoint.clone(), i);
-                        i
-                    }
-                };
+                let i = *self
+                    .session_index_to_peer
+                    .get(&message.receiver_index)
+                    .ok_or(Error)?;
                 let peer = &mut self.peers[i];
                 if peer.peer.endpoint.is_none() {
                     peer.peer.endpoint = Some(endpoint);
@@ -310,13 +306,10 @@ impl<E: Clone + Hash + Eq> Node<E> {
                 Ok(None)
             }
             Message::PacketData(message) => {
-                let i = match i {
-                    Some(i) => i,
-                    None => *self
-                        .session_index_to_peer
-                        .get(&message.receiver_index)
-                        .ok_or(Error)?,
-                };
+                let i = *self
+                    .session_index_to_peer
+                    .get(&message.receiver_index)
+                    .ok_or(Error)?;
                 let peer = &mut self.peers[i];
                 if let Some(session) = peer.session.as_mut() {
                     if session.packet_drop_timer().expired(self.now)
@@ -355,9 +348,9 @@ impl<E: Clone + Hash + Eq> Node<E> {
 }
 
 #[cfg(test)]
-impl std::fmt::Debug for Node {
+impl<E> std::fmt::Debug for Node<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        writeln!(f, "{} > connections", self.name)?;
+        writeln!(f, "> connections")?;
         for state in self.peers.iter() {
             match state.session.as_ref() {
                 Some(session) => {
@@ -378,7 +371,7 @@ impl std::fmt::Debug for Node {
                 },
             }
         }
-        writeln!(f, "{} > timers", self.name)?;
+        writeln!(f, "> timers")?;
         for state in self.peers.iter() {
             writeln!(
                 f,
@@ -440,8 +433,7 @@ impl std::fmt::Debug for Node {
         }
         writeln!(
             f,
-            "{} > next event time {}",
-            self.name,
+            "> next event time {}",
             self.next_event_time().remaining_secs(self.now)
         )?;
         writeln!(f, "-")?;
@@ -450,10 +442,10 @@ impl std::fmt::Debug for Node {
 }
 
 pub struct Peer<E> {
-    public_key: PublicKey,
-    preshared_key: PresharedKey,
-    persistent_keepalive: Duration,
-    endpoint: Option<E>,
+    pub public_key: PublicKey,
+    pub preshared_key: PresharedKey,
+    pub persistent_keepalive: Duration,
+    pub endpoint: Option<E>,
 }
 
 struct PeerState<E> {
@@ -828,11 +820,15 @@ const_assert!(REKEY_AFTER_TIME.as_nanos() <= REJECT_AFTER_TIME.as_nanos());
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+    use std::net::SocketAddr;
+    use std::net::UdpSocket;
+
     use super::*;
 
     #[test]
     #[cfg_attr(miri, ignore)] // timeouts are too small for miri
-    fn node() {
+    fn node_no_endpoint() {
         let parent_private_key = PrivateKey::random();
         let parent_public_key: PublicKey = (&parent_private_key).into();
         let child_private_key = PrivateKey::random();
@@ -846,7 +842,6 @@ mod tests {
                 persistent_keepalive: Duration::ZERO,
                 endpoint: None,
             }],
-            "parent",
         );
         let mut child: Node<()> = Node::new(
             child_private_key,
@@ -856,7 +851,6 @@ mod tests {
                 persistent_keepalive: Duration::ZERO,
                 endpoint: Some(()),
             }],
-            "child",
         );
         let mut child_outgoing_packets: VecDeque<Vec<u8>> = Default::default();
         let mut parent_outgoing_packets: VecDeque<Vec<u8>> = Default::default();
@@ -866,22 +860,73 @@ mod tests {
             .send(expected_data.to_vec(), &parent.public_key)
             .unwrap();
         child.flush(&mut child_outgoing_packets).unwrap();
-        eprintln!("{:?}", child);
         parent.advance(Instant::now()).unwrap();
-        parent.fill(&mut child_outgoing_packets).unwrap();
+        parent.fill_buf(&mut child_outgoing_packets).unwrap();
         assert_eq!(None, parent.receive().unwrap());
         parent.flush(&mut parent_outgoing_packets).unwrap();
         child.advance(Instant::now()).unwrap();
-        child.fill(&mut parent_outgoing_packets).unwrap();
+        child.fill_buf(&mut parent_outgoing_packets).unwrap();
         assert_eq!(None, child.receive().unwrap());
-        eprintln!("{:?}", child);
-        eprintln!("{:?}", parent);
         child.flush(&mut child_outgoing_packets).unwrap();
         parent.advance(Instant::now()).unwrap();
-        parent.fill(&mut child_outgoing_packets).unwrap();
+        parent.fill_buf(&mut child_outgoing_packets).unwrap();
         let (actual_data, from) = parent.receive().unwrap().unwrap();
         assert_eq!(child_public_key, from);
         assert_eq!(expected_data, actual_data);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // timeouts are too small for miri
+    fn echo_server_via_blocking_udp_socket() {
+        let mut hub_socket =
+            UdpSocket::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)).unwrap();
+        let hub_socket_addr = hub_socket.local_addr().unwrap();
+        let mut spoke_socket =
+            UdpSocket::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)).unwrap();
+        let hub_private_key = PrivateKey::random();
+        let hub_public_key: PublicKey = (&hub_private_key).into();
+        let spoke_private_key = PrivateKey::random();
+        let spoke_public_key: PublicKey = (&spoke_private_key).into();
+        let preshared_key = PresharedKey::random();
+        let mut hub: Node<SocketAddr> = Node::new(
+            hub_private_key,
+            vec![Peer {
+                public_key: spoke_public_key,
+                preshared_key: preshared_key.clone(),
+                persistent_keepalive: Duration::ZERO,
+                endpoint: None,
+            }],
+        );
+        let mut spoke: Node<SocketAddr> = Node::new(
+            spoke_private_key,
+            vec![Peer {
+                public_key: hub_public_key,
+                preshared_key: preshared_key.clone(),
+                persistent_keepalive: Duration::ZERO,
+                endpoint: Some(hub_socket_addr),
+            }],
+        );
+        // echo server
+        let hub_thread = std::thread::Builder::new()
+            .name("hub-echo-server".into())
+            .spawn(move || loop {
+                hub.advance(Instant::now()).unwrap();
+                hub.fill_buf_once(&mut hub_socket).unwrap();
+                if let Some((data, from)) = hub.receive().unwrap() {
+                    hub.send(data, &from).unwrap();
+                    hub.flush(&mut hub_socket).unwrap();
+                    return;
+                }
+                hub.flush(&mut hub_socket).unwrap();
+            })
+            .unwrap();
+        let expected_data = "hello world".as_bytes();
+        let (actual_data, from) = spoke
+            .send_receive_blocking(expected_data.to_vec(), &hub_public_key, &mut spoke_socket)
+            .unwrap();
+        assert_eq!(hub_public_key, from);
+        assert_eq!(expected_data, actual_data);
+        hub_thread.join().unwrap();
     }
 
     impl Sink<()> for VecDeque<Vec<u8>> {

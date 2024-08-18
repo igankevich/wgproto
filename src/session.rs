@@ -117,6 +117,7 @@ impl Initiator {
             cookie: self.last_received_cookie.as_ref(),
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         message.encode_with_context(&mut buffer, context);
         Ok(buffer)
@@ -308,6 +309,7 @@ impl Responder {
             cookie: self.last_received_cookie.as_ref(),
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         message.encode_with_context(&mut buffer, context);
         let (temp2, temp3) = derive_keys(&self.chaining_key)?;
@@ -387,6 +389,7 @@ impl Session {
             cookie: None,
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         }
     }
 }
@@ -404,6 +407,7 @@ pub struct Context<'a> {
     pub cookie: Option<&'a Cookie>,
     pub mac2_is_valid: Option<bool>,
     pub under_load: bool,
+    pub check_macs: bool,
 }
 
 impl<'a> Context<'a> {
@@ -413,6 +417,7 @@ impl<'a> Context<'a> {
             cookie: None,
             mac2_is_valid: None,
             under_load: false,
+            check_macs: true,
         }
     }
 
@@ -430,6 +435,9 @@ impl<'a> Context<'a> {
     }
 
     pub fn verify(&mut self, buffer: &mut InputBuffer) -> Result<(), Error> {
+        if !self.check_macs {
+            return Ok(());
+        }
         let mac1_offset = buffer.position();
         let other_mac1: [u8; MAC_LEN] = buffer
             .get_next(MAC_LEN)
@@ -568,7 +576,7 @@ mod tests {
     use super::*;
     use crate::DecodeWithContext;
     use crate::Message;
-    use crate::MessageType;
+    use crate::MessageKind;
     use arbitrary::Arbitrary;
     use arbtest::arbtest;
 
@@ -581,6 +589,7 @@ mod tests {
             cookie: None,
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         for n in 0..(bytes.len() - 1) {
             let mut buffer = InputBuffer::new(&bytes[..n]);
@@ -588,7 +597,7 @@ mod tests {
         }
         let mut buffer = InputBuffer::new(bytes.as_slice());
         let message = Message::decode_with_context(&mut buffer, &mut context).unwrap();
-        assert_eq!(MessageType::HandshakeInitiation, message.get_type());
+        assert_eq!(MessageKind::HandshakeInitiation, message.kind());
         assert!(buffer.is_empty());
         let mut buffer = Vec::new();
         let context = Context {
@@ -596,6 +605,7 @@ mod tests {
             cookie: None,
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         message.encode_with_context(&mut buffer, context);
         assert_eq!(bytes.as_slice(), buffer.as_slice());
@@ -610,6 +620,7 @@ mod tests {
             cookie: None,
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         for n in 0..(bytes.len() - 1) {
             let mut buffer = InputBuffer::new(&bytes[..n]);
@@ -617,7 +628,7 @@ mod tests {
         }
         let mut buffer = InputBuffer::new(bytes.as_slice());
         let message = Message::decode_with_context(&mut buffer, &mut context).unwrap();
-        assert_eq!(MessageType::HandshakeResponse, message.get_type());
+        assert_eq!(MessageKind::HandshakeResponse, message.kind());
         assert!(buffer.is_empty());
         let mut buffer = Vec::new();
         let context = Context {
@@ -625,6 +636,7 @@ mod tests {
             cookie: None,
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         message.encode_with_context(&mut buffer, context);
         assert_eq!(bytes.as_slice(), buffer.as_slice());
@@ -642,6 +654,7 @@ mod tests {
             cookie: None,
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         let mut buffer = InputBuffer::new(bytes.as_slice());
         let message = Message::decode_with_context(&mut buffer, &mut context)?;
@@ -677,10 +690,11 @@ mod tests {
             cookie: None,
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         let mut buffer = InputBuffer::new(initiation_bytes.as_slice());
         let message = Message::decode_with_context(&mut buffer, &mut context)?;
-        assert_eq!(MessageType::HandshakeInitiation, message.get_type());
+        assert_eq!(MessageKind::HandshakeInitiation, message.kind());
         assert!(buffer.is_empty());
         let (mut responder, initiation, response_bytes) = match message {
             Message::HandshakeInitiation(message) => Responder::respond(
@@ -697,10 +711,11 @@ mod tests {
             cookie: None,
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         let mut buffer = InputBuffer::new(response_bytes.as_slice());
         let message = Message::decode_with_context(&mut buffer, &mut context)?;
-        assert_eq!(MessageType::HandshakeResponse, message.get_type());
+        assert_eq!(MessageKind::HandshakeResponse, message.kind());
         assert!(buffer.is_empty());
         let mut session = match message {
             Message::HandshakeResponse(message) => initiator.on_handshake_response(message)?,
@@ -714,6 +729,7 @@ mod tests {
             cookie: None,
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         message.encode_with_context(&mut buffer, context);
         let mut context = Context {
@@ -721,10 +737,11 @@ mod tests {
             cookie: None,
             under_load: false,
             mac2_is_valid: None,
+            check_macs: true,
         };
         let mut buffer = InputBuffer::new(buffer.as_slice());
         let message = Message::decode_with_context(&mut buffer, &mut context)?;
-        assert_eq!(MessageType::PacketData, message.get_type());
+        assert_eq!(MessageKind::PacketData, message.kind());
         assert!(buffer.is_empty());
         let packet_data = match message {
             Message::PacketData(message) => responder.receive(&message)?,
