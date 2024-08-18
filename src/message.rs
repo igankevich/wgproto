@@ -1,4 +1,3 @@
-use crate::Context;
 use crate::Counter;
 use crate::Decode;
 use crate::DecodeWithContext;
@@ -73,15 +72,15 @@ impl Message {
     }
 }
 
-impl DecodeWithContext<&mut Context<'_>> for Message {
-    fn decode_with_context(buffer: &mut InputBuffer, context: &mut Context) -> Result<Self, Error> {
+impl<V: MessageVerifier> DecodeWithContext<&mut V> for Message {
+    fn decode_with_context(buffer: &mut InputBuffer, verifier: &mut V) -> Result<Self, Error> {
         let message = match MessageKind::decode(buffer)? {
             MessageKind::HandshakeInitiation => {
-                let message = EncryptedHandshakeInitiation::decode_with_context(buffer, context)?;
+                let message = EncryptedHandshakeInitiation::decode_with_context(buffer, verifier)?;
                 Message::HandshakeInitiation(message)
             }
             MessageKind::HandshakeResponse => {
-                let message = EncryptedHandshakeResponse::decode_with_context(buffer, context)?;
+                let message = EncryptedHandshakeResponse::decode_with_context(buffer, verifier)?;
                 Message::HandshakeResponse(message)
             }
             MessageKind::PacketData => {
@@ -93,16 +92,16 @@ impl DecodeWithContext<&mut Context<'_>> for Message {
     }
 }
 
-impl EncodeWithContext<Context<'_>> for Message {
-    fn encode_with_context(&self, buffer: &mut Vec<u8>, context: Context) {
+impl<S: MessageSigner> EncodeWithContext<&mut S> for Message {
+    fn encode_with_context(&self, buffer: &mut Vec<u8>, signer: &mut S) {
         match self {
             Message::HandshakeInitiation(message) => {
                 MessageKind::HandshakeInitiation.encode(buffer);
-                message.encode_with_context(buffer, context);
+                message.encode_with_context(buffer, signer);
             }
             Message::HandshakeResponse(message) => {
                 MessageKind::HandshakeResponse.encode(buffer);
-                message.encode_with_context(buffer, context);
+                message.encode_with_context(buffer, signer);
             }
             Message::PacketData(message) => {
                 MessageKind::PacketData.encode(buffer);
@@ -131,13 +130,13 @@ impl EncryptedHandshakeInitiation {
     const LEN: usize = HANDSHAKE_INITIATION_LEN;
 }
 
-impl DecodeWithContext<&mut Context<'_>> for EncryptedHandshakeInitiation {
-    fn decode_with_context(buffer: &mut InputBuffer, context: &mut Context) -> Result<Self, Error> {
+impl<V: MessageVerifier> DecodeWithContext<&mut V> for EncryptedHandshakeInitiation {
+    fn decode_with_context(buffer: &mut InputBuffer, verifier: &mut V) -> Result<Self, Error> {
         let sender_index = SessionIndex::decode(buffer)?;
         let unencrypted_ephemeral = PublicKey::decode(buffer)?;
         let encrypted_static = EncryptedStatic::decode(buffer)?;
         let encrypted_timestamp = EncryptedTimestamp::decode(buffer)?;
-        context.verify(buffer)?;
+        verifier.verify(buffer)?;
         Ok(Self {
             sender_index,
             unencrypted_ephemeral,
@@ -147,13 +146,13 @@ impl DecodeWithContext<&mut Context<'_>> for EncryptedHandshakeInitiation {
     }
 }
 
-impl EncodeWithContext<Context<'_>> for EncryptedHandshakeInitiation {
-    fn encode_with_context(&self, buffer: &mut Vec<u8>, context: Context<'_>) {
+impl<S: MessageSigner> EncodeWithContext<&mut S> for EncryptedHandshakeInitiation {
+    fn encode_with_context(&self, buffer: &mut Vec<u8>, signer: &mut S) {
         self.sender_index.encode(buffer);
         self.unencrypted_ephemeral.encode(buffer);
         self.encrypted_static.encode(buffer);
         self.encrypted_timestamp.encode(buffer);
-        context.sign(buffer);
+        signer.sign(buffer);
     }
 }
 
@@ -169,13 +168,13 @@ impl EncryptedHandshakeResponse {
     const LEN: usize = HANDSHAKE_RESPONSE_LEN;
 }
 
-impl DecodeWithContext<&mut Context<'_>> for EncryptedHandshakeResponse {
-    fn decode_with_context(buffer: &mut InputBuffer, context: &mut Context) -> Result<Self, Error> {
+impl<V: MessageVerifier> DecodeWithContext<&mut V> for EncryptedHandshakeResponse {
+    fn decode_with_context(buffer: &mut InputBuffer, verifier: &mut V) -> Result<Self, Error> {
         let sender_index = SessionIndex::decode(buffer)?;
         let receiver_index = SessionIndex::decode(buffer)?;
         let unencrypted_ephemeral = PublicKey::decode(buffer)?;
         let encrypted_nothing = EncryptedNothing::decode(buffer)?;
-        context.verify(buffer)?;
+        verifier.verify(buffer)?;
         Ok(Self {
             sender_index,
             receiver_index,
@@ -185,13 +184,13 @@ impl DecodeWithContext<&mut Context<'_>> for EncryptedHandshakeResponse {
     }
 }
 
-impl EncodeWithContext<Context<'_>> for EncryptedHandshakeResponse {
-    fn encode_with_context(&self, buffer: &mut Vec<u8>, context: Context) {
+impl<S: MessageSigner> EncodeWithContext<&mut S> for EncryptedHandshakeResponse {
+    fn encode_with_context(&self, buffer: &mut Vec<u8>, signer: &mut S) {
         self.sender_index.encode(buffer);
         self.receiver_index.encode(buffer);
         self.unencrypted_ephemeral.encode(buffer);
         self.encrypted_nothing.encode(buffer);
-        context.sign(buffer);
+        signer.sign(buffer);
     }
 }
 
@@ -249,6 +248,14 @@ impl AsRef<[u8; COOKIE_LEN]> for Cookie {
     fn as_ref(&self) -> &[u8; COOKIE_LEN] {
         &self.data
     }
+}
+
+pub trait MessageSigner {
+    fn sign(&mut self, buffer: &mut Vec<u8>);
+}
+
+pub trait MessageVerifier {
+    fn verify(&mut self, buffer: &mut InputBuffer) -> Result<(), Error>;
 }
 
 const TAI64N_LEN: usize = 12;

@@ -4,13 +4,14 @@ use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
 use arbtest::arbtest;
 
-use crate::Context;
 use crate::Cookie;
 use crate::Decode;
 use crate::DecodeWithContext;
 use crate::Encode;
 use crate::EncodeWithContext;
 use crate::InputBuffer;
+use crate::MacSigner;
+use crate::MacVerifier;
 use crate::PublicKey;
 use crate::PUBLIC_KEY_LEN;
 
@@ -57,8 +58,8 @@ impl From<PublicKeyProxy> for PublicKey {
 
 pub(crate) fn encode_decode_symmetry_with_context<T>()
 where
-    T: for<'b> EncodeWithContext<Context<'b>>
-        + for<'c, 'c2> DecodeWithContext<&'c2 mut Context<'c>>
+    T: for<'b, 'b2> EncodeWithContext<&'b mut MacSigner<'b2>>
+        + for<'c, 'c2> DecodeWithContext<&'c mut MacVerifier<'c2>>
         + Debug
         + PartialEq
         + for<'a> Arbitrary<'a>,
@@ -69,23 +70,11 @@ where
         let static_public: PublicKeyProxy = u.arbitrary()?;
         let static_public: PublicKey = static_public.into();
         let cookie: Option<Cookie> = u.arbitrary()?;
-        let context = Context {
-            static_public: &static_public,
-            cookie: cookie.as_ref(),
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
-        expected.encode_with_context(&mut buffer, context);
-        let mut context = Context {
-            static_public: &static_public,
-            cookie: cookie.as_ref(),
-            under_load: false,
-            mac2_is_valid: None,
-            check_macs: true,
-        };
+        let mut signer = MacSigner::new(&static_public, cookie.as_ref());
+        expected.encode_with_context(&mut buffer, &mut signer);
+        let mut verifier = MacVerifier::new(&static_public, cookie.as_ref());
         let mut buffer = InputBuffer::new(buffer.as_slice());
-        let actual = T::decode_with_context(&mut buffer, &mut context).unwrap();
+        let actual = T::decode_with_context(&mut buffer, &mut verifier).unwrap();
         assert!(buffer.is_empty());
         assert_eq!(expected, actual);
         Ok(())
