@@ -351,13 +351,9 @@ impl Session {
             return Err(Error); // TODO
         }
         let data = message.encrypted_encapsulated_packet.as_slice();
-        let unencrypted_packet = aead_decrypt(
-            &self.receiving_key,
-            self.receiving_key_counter.as_u64(),
-            data,
-            [],
-        )?;
-        self.receiving_key_counter.increment();
+        let unencrypted_packet =
+            aead_decrypt(&self.receiving_key, message.counter.as_u64(), data, [])?;
+        self.receiving_key_counter = message.counter;
         Ok(unencrypted_packet)
     }
 
@@ -381,7 +377,7 @@ impl Session {
 fn derive_keys(chaining_key: &ChainingKey) -> Result<(Key, Key), Error> {
     let temp1 = hmac_blake2s(chaining_key, []);
     let temp2 = hmac_blake2s(&temp1, [0x1]);
-    let temp3 = hmac_blake2s_add(&temp1, &temp2, [0x1]);
+    let temp3 = hmac_blake2s_add(&temp1, &temp2, [0x2]);
     Ok((temp2, temp3))
 }
 
