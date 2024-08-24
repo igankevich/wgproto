@@ -3,7 +3,7 @@ use crate::InputBuffer;
 use crate::PublicKey;
 use crate::PUBLIC_KEY_LEN;
 
-pub trait Decode<C = ()> {
+pub trait Decode {
     fn decode(buffer: &mut InputBuffer) -> Result<Self, Error>
     where
         Self: Sized;
